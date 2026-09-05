@@ -39,7 +39,9 @@ async function run() {
     if (!res) return;
     post.dataset.sieve = res.p.toFixed(2);   // every post carries its score, for tuning the threshold
     // Until both classes have a few labels the score means nothing, so record it
-    // for tuning but don't act on it.
+    // for tuning but don't act on it. res.exact bypasses that: you marked this
+    // exact post, so it hides regardless of what the model currently thinks.
+    if (res.exact) { if (res.p) collapse(post, 1, true); return; }
     if (res.ready && res.p > threshold) collapse(post, res.p);
   }
 
@@ -52,9 +54,10 @@ async function run() {
     return el;
   };
 
-  function collapse(post, p) {
+  function collapse(post, p, exact) {
     if (post.classList.contains("sieve-hidden")) return;
-    bar(post, `hidden ${p.toFixed(2)} — click if this is fine`).onclick = () => teach(post, 0);
+    const label = exact ? "hidden — you marked this one" : `hidden ${p.toFixed(2)} — click if this is fine`;
+    bar(post, label).onclick = () => teach(post, 0);
     post.classList.add("sieve-hidden");
   }
 

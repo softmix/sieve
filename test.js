@@ -109,6 +109,26 @@ test("rare positives survive a pile of negatives", () => {
   assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
 });
 
+test("scores actually clear the default threshold, not just rank correctly", () => {
+  // The failure this catches is invisible to accuracy: a model can separate the
+  // classes perfectly (means 0.83 vs 0.17) while squashing every score toward
+  // 0.5, so nothing crosses 0.85 and the filter does nothing at all. Ranking is
+  // not enough -- the numbers have to land where the threshold is.
+  const labels = [];
+  for (let k = 0; k < 5; k++)
+    for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });
+
+  const m = fit(labels);
+  const held = [];
+  for (let k = 9000; k < 9030; k++)
+    for (const [i, t, y] of PAIRS) held.push({ p: m.score(jit(i, k), jit(t, k + 991)), y });
+
+  const hides = held.filter(l => l.y).map(l => l.p);
+  const over = hides.filter(p => p > 0.85).length / hides.length;
+  assert.ok(over > 0.8, `only ${(over * 100) | 0}% of true hides clear 0.85 at ${labels.length} labels`);
+  assert.ok(held.filter(l => !l.y).every(l => l.p < 0.85), "a true keep crossed the threshold");
+});
+
 test("holdout reports accuracy on data it did not train on", () => {
   const labels = [];
   for (let k = 0; k < 60; k++)

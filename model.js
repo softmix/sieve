@@ -83,9 +83,20 @@ export const usable = labels => {
 // Refit from scratch over the whole label log. Online learn() drifts toward
 // whatever you clicked most recently; this doesn't, and it's cheap enough
 // (1537 params) to just re-run whenever labels change.
-// ponytail: cost is O(labels * epochs) on every click -- ~200ms at 240 labels,
-// ~1s at 1000. Warm-start from the current weights if that ever gets annoying.
-export function fit(labels, { epochs = 100, lr = 0.5, decay = 1e-3 } = {}) {
+// These three numbers are load-bearing and were tuned against the threshold, not
+// against accuracy. Raising decay to 1e-3 keeps ranking perfect (0.83 vs 0.17
+// class means) while squashing every score toward 0.5, so almost nothing clears
+// the 0.85 threshold and the filter silently does nothing. Annealing the rate
+// does the same. There's a test pinning calibration; if you change these, watch
+// it rather than the accuracy number.
+//
+// epochs is part of that calibration, not just a convergence knob: at 30 the
+// ranking is already perfect but only 3% of true hides clear 0.85, so the filter
+// does nothing. At 200 it's 100% with no false positives.
+//
+// ponytail: cost is O(labels * epochs) per click -- ~340ms at 320 labels, ~1s at
+// 1000. Warm-start from the current weights if that ever gets annoying.
+export function fit(labels, { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
   // Balanced class weights. A filter exists for rare things, so a handful of
@@ -100,12 +111,7 @@ export function fit(labels, { epochs = 100, lr = 0.5, decay = 1e-3 } = {}) {
       const j = (rnd() * (i + 1)) | 0;
       [idx[i], idx[j]] = [idx[j], idx[i]];
     }
-    // Annealed step. With a flat rate this hasn't converged by the last epoch,
-    // so the order you happened to click labels in shifts scores by up to 0.17 --
-    // enough to flip a post either side of the threshold. Annealing takes that
-    // to 0.002.
-    const step = lr / (1 + e);
-    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, step * wt(labels[i].y), decay);
+    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, lr * wt(labels[i].y), decay);
   }
   return m;
 }

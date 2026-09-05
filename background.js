@@ -79,17 +79,30 @@ let model = new Model();
 let labels = [];
 let scored = 0, spent = 0;
 
+// Exact recall, in front of the model. A post you explicitly marked is a stored
+// fact, not a prediction -- it must stay hidden on reload even while the model
+// is still warming up and even if the model would score it 0.2. Generalising to
+// *other* posts is the model's job; remembering this one isn't.
+const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
+let taught = new Map();
+const reindex = () => (taught = new Map(labels.filter(l => l.key).map(l => [l.key, l.y])));
+
 const booted = (async () => {
   const s = await browser.storage.local.get({ labels: [] });
   labels = s.labels.map(l => ({ ...l, img: toF32(l.img), txt: toF32(l.txt) }));
+  reindex();
   if (labels.length) model = fit(labels);
-  console.log(`sieve: ${labels.length} labels loaded`);
+  const c = counts(labels);
+  console.log(`sieve: ${c.pos} hide / ${c.neg} keep loaded, filtering ${usable(labels) ? "on" : "off"}`);
 })();
 
 browser.runtime.onMessage.addListener(async msg => {
   await booted;
   switch (msg.type) {
     case "score": {
+      const known = taught.get(keyOf(msg.text, msg.img));
+      if (known !== undefined) return { p: known, ready: true, exact: true };
+
       const t = performance.now();
       const e = await embed(msg.text, msg.img);
       spent += performance.now() - t;
@@ -101,7 +114,10 @@ browser.runtime.onMessage.addListener(async msg => {
     }
     case "label": {
       const e = await embed(msg.text, msg.img);
-      labels.push({ img: e.img, txt: e.txt, y: msg.y, ts: Date.now() });
+      const key = keyOf(msg.text, msg.img);
+      labels = labels.filter(l => l.key !== key);   // re-labelling replaces, not stacks
+      labels.push({ img: e.img, txt: e.txt, y: msg.y, key, ts: Date.now() });
+      reindex();
       // 1537 params: refitting the whole log is milliseconds and avoids the
       // recency drift you get from applying single gradient steps forever.
       model = fit(labels);
