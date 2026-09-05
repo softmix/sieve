@@ -131,6 +131,17 @@ The model is shared across every site — only the scraping differs.
 the fetch is free, and CLIP resizes to 224px anyway. Point it at the full image
 if classification turns out to need the detail.
 
+## Options page
+
+Status (including which backend actually loaded), the hide threshold, how many
+seen-posts to keep, export, reset — and **close calls**.
+
+Close calls is uncertainty sampling: the posts whose score sits nearest 0.5,
+which are the ones where a label moves the model most. They're drawn from the
+seen pool, so their embeddings are already stored and labelling one costs no
+inference at all — it promotes the existing weak label to a full-weight one in
+place. It's much the fastest way to get from "just started" to "actually works".
+
 ## Retraining
 
 Every label stores its two embeddings, so refitting never re-runs CLIP. The

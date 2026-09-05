@@ -30,7 +30,7 @@ const BACKENDS = [
   { device: "wasm", dtype: "q8" },
 ];
 
-let engine;
+let engine, backend = "loading";
 const load = () => (engine ??= (async () => {
   const at = {};   // one line per decile per file, not one per chunk
   const progress_callback = x => {
@@ -56,7 +56,8 @@ const load = () => (engine ??= (async () => {
       await vis(await proc(new RawImage(new Uint8ClampedArray(224 * 224 * 3), 224, 224, 3)));
       await txt(tok(["warmup"], { padding: true, truncation: true }));
 
-      console.log(`sieve: clip ready on ${cfg.device}/${cfg.dtype}`);
+      backend = `${cfg.device}/${cfg.dtype}`;
+      console.log(`sieve: clip ready on ${backend}`);
       return { tok, proc, txt, vis };
     } catch (e) {
       console.warn(`sieve: ${cfg.device}/${cfg.dtype} unusable (${e.message}), trying next`);
@@ -183,17 +184,27 @@ function reindex() {
   }
 }
 
+// keyOf() builds `${url}\n${text}` and the text may itself contain newlines, so
+// split once. Lets the options page show a post preview without storing the url
+// and text a second time alongside the embeddings.
+const splitKey = key => {
+  const i = key.indexOf("\n");
+  return { url: key.slice(0, i), text: key.slice(i + 1) };
+};
+
 // Bounded, because these accrue on their own: every scored post adds one, so a
 // couple of catalog pages would otherwise put thousands through fit() on every
-// click. Oldest out.
-const SEEN_MAX = 300;
+// click. Oldest out. Explicit labels are never pruned.
+let seenMax = 300;
 let threshold = 0.85;
 
 function noteSeen(e, key) {
   if (taught.has(key) || seenKeys.has(key)) return;
   const seen = labels.filter(l => l.src === "seen");
-  if (seen.length >= SEEN_MAX) {
-    const drop = new Set(seen.slice(0, seen.length - SEEN_MAX + 1));
+  if (seen.length >= seenMax) {
+    // Drops all excess in one pass, so lowering the setting takes effect on the
+    // next scored post rather than decaying one at a time.
+    const drop = new Set(seen.slice(0, seen.length - seenMax + 1));
     labels = labels.filter(l => !drop.has(l));
   }
   labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, ts: Date.now() });
@@ -215,8 +226,9 @@ async function commit() {
 }
 
 const booted = (async () => {
-  const s = await browser.storage.local.get({ labels: [], threshold: 0.85 });
+  const s = await browser.storage.local.get({ labels: [], threshold: 0.85, seenMax: 300 });
   threshold = s.threshold;
+  seenMax = s.seenMax;
   labels = s.labels.map(l => ({ ...l, img: toF32(l.img), txt: toF32(l.txt) }));
   reindex();
   if (labels.length) model = fit(labels);
@@ -225,7 +237,10 @@ const booted = (async () => {
     + ` filtering ${usable(labels) ? "on" : "off"}`);
 })();
 
-browser.storage.onChanged.addListener(c => c.threshold && (threshold = c.threshold.newValue));
+browser.storage.onChanged.addListener(c => {
+  if (c.threshold) threshold = c.threshold.newValue;
+  if (c.seenMax) seenMax = c.seenMax.newValue;
+});
 
 browser.runtime.onMessage.addListener(async msg => {
   await booted;
@@ -279,14 +294,46 @@ browser.runtime.onMessage.addListener(async msg => {
       return { ...c, ready: usable(labels), need: MIN_PER_CLASS };
     }
     case "stats":
-      return { ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS, holdout: holdout(labels) };
+      return {
+        ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS,
+        holdout: holdout(labels), backend,
+      };
+
+    // Uncertainty sampling: the posts the model is least sure about are the ones
+    // where a label teaches it the most. They're drawn from the seen pool, which
+    // already carries embeddings, so labelling one costs no inference at all.
+    case "closeCalls": {
+      return labels
+        .filter(l => l.src === "seen")
+        .map(l => ({ key: l.key, p: model.score(l.img, l.txt) }))
+        .sort((a, b) => Math.abs(a.p - 0.5) - Math.abs(b.p - 0.5))
+        .slice(0, msg.n ?? 12)
+        .map(s => ({ ...s, ...splitKey(s.key) }));
+    }
+
+    // Promote a seen post to an explicit label in place. Reuses its stored
+    // embeddings rather than re-fetching and re-embedding the post.
+    case "relabel": {
+      const l = labels.find(x => x.key === msg.key);
+      if (!l) return { gone: true };
+      Object.assign(l, { y: msg.y, w: 1, src: msg.y ? "hide" : "keep", ts: Date.now() });
+      reindex();
+      await commit();
+      return { ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS };
+    }
     case "export":
-      return labels.map(l => ({ img: [...l.img], txt: [...l.txt], y: l.y, ts: l.ts }));
+      // Everything needed to rebuild the model elsewhere, weights and origin
+      // included -- not just the embeddings.
+      return labels.map(l => ({
+        img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, ts: l.ts,
+      }));
+
     case "reset":
       labels = [];
       model = new Model();
+      reindex();   // or exact recall keeps hiding posts that no longer have labels
       await browser.storage.local.set({ labels });
-      return { n: 0 };
+      return { ok: true };
   }
 });
 
