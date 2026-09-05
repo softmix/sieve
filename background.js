@@ -14,14 +14,20 @@ env.backends.onnx.wasm.numThreads = 1;
 
 // Tried in order, first one that loads *and* runs wins.
 //
-// wasm is first because it measured faster, which was not the expectation:
-// 254-335ms per post against WebGPU's 358-563ms, at half the download (q8 vs the
-// fp16 WebGPU needs). ViT-B/32 at batch-of-1 is dispatch-bound, so the GPU
-// round-trip costs more than the work it saves. Flip these if batching ever
-// lands -- that's the regime where WebGPU should win.
+// WebGPU is only worth it batched, and dramatically so. Measured ms per image
+// for the vision tower:
+//
+//              batch 1   batch 4   batch 16   batch 32
+//   wasm/q8      125       113       111        112      <- compute-bound, flat
+//   webgpu/fp16  101        25         6.3        6.3    <- 101ms/call, flat
+//
+// The WebGPU *call* costs ~101ms whether it carries 1 image or 16, so at batch 1
+// it loses to wasm outright and at batch 16 it wins ~18x. Everything downstream
+// batches for that reason; see embedTexts/embedImages. fp16 is about twice the
+// download of q8, which is the price.
 const BACKENDS = [
-  { device: "wasm", dtype: "q8" },
   { device: "webgpu", dtype: "fp16" },
+  { device: "wasm", dtype: "q8" },
 ];
 
 let engine;
@@ -69,45 +75,81 @@ const keep = (m, k, v) => {
   return v;
 };
 
-async function embedText(s) {
-  s = (s || "").trim();
-  if (!s) return ZERO;
-  if (cache.txt.has(s)) return cache.txt.get(s);
+// Everything below embeds in batches, because on WebGPU one call costs the same
+// whether it carries 1 image or 16: measured 101ms/call flat, i.e. 101ms/img at
+// batch 1 but 6.3ms/img at batch 16. WASM is compute-bound and flat at ~112ms/img
+// either way, so batching costs it nothing.
+
+async function embedTexts(texts) {
+  const out = new Array(texts.length);
   const { tok, txt } = await load();
+
   // CLIP's text tower stops at 77 tokens and forum posts routinely run longer,
   // so chunk and mean-pool rather than silently classify only the first sentence.
-  const ids = tok(s).input_ids.tolist()[0].slice(1, -1);
-  const parts = [];
-  for (let i = 0; i < ids.length; i += 75) parts.push(tok.decode(ids.slice(i, i + 75)));
-  const { text_embeds } = await txt(tok(parts, { padding: true, truncation: true }));
-  return keep(cache.txt, s, l2(text_embeds.tolist().reduce((a, r) => a.map((x, i) => x + r[i]))));
+  // Every chunk of every post goes into one flat batch; `owner` maps back.
+  const chunks = [], owner = [];
+  texts.forEach((raw, i) => {
+    const s = (raw || "").trim();
+    if (!s) return void (out[i] = ZERO);
+    const hit = cache.txt.get(s);
+    if (hit) return void (out[i] = hit);
+    const ids = tok(s).input_ids.tolist()[0].slice(1, -1);
+    if (!ids.length) return void (out[i] = ZERO);
+    for (let j = 0; j < ids.length; j += 75) {
+      chunks.push(tok.decode(ids.slice(j, j + 75)));
+      owner.push(i);
+    }
+  });
+  if (!chunks.length) return out;
+
+  const { text_embeds } = await txt(tok(chunks, { padding: true, truncation: true }));
+  const sums = new Map();
+  text_embeds.tolist().forEach((r, k) => {
+    const acc = sums.get(owner[k]);
+    if (acc) r.forEach((x, d) => (acc[d] += x)); else sums.set(owner[k], [...r]);
+  });
+  for (const [i, acc] of sums) out[i] = keep(cache.txt, (texts[i] || "").trim(), l2(acc));
+  return out;
 }
 
-async function embedImage(src) {
-  if (!src) return ZERO;
-  if (cache.img.has(src)) return cache.img.get(src);
-  const { proc, vis } = await load();
-  // Timed separately because it's a network fetch plus a decode, and on a fast
-  // backend it can easily cost more than the inference it feeds.
+async function embedImages(srcs) {
+  const out = new Array(srcs.length);
+  const raws = [], need = [];
+
+  // Fetches run concurrently even though inference doesn't -- they're the one
+  // part of this that genuinely parallelises.
   const t = performance.now();
-  const raw = await RawImage.read(src);
+  await Promise.all(srcs.map(async (src, i) => {
+    if (!src) return void (out[i] = ZERO);
+    const hit = cache.img.get(src);
+    if (hit) return void (out[i] = hit);
+    try {
+      raws[i] = await RawImage.read(src);
+      need.push(i);
+    } catch {
+      out[i] = ZERO;   // a dead thumbnail shouldn't take the whole batch down
+    }
+  }));
   fetched += performance.now() - t;
-  const { image_embeds } = await vis(await proc(raw));
-  return keep(cache.img, src, l2(image_embeds.tolist()[0]));
+  if (!need.length) return out;
+
+  const { proc, vis } = await load();
+  const { image_embeds } = await vis(await proc(need.map(i => raws[i])));
+  const rows = image_embeds.tolist();
+  need.forEach((i, k) => (out[i] = keep(cache.img, srcs[i], l2(rows[k]))));
+  return out;
 }
 
-// One ORT session, one caller at a time. Without this a fast scroll fires a
-// dozen overlapping inferences and they fight over the same session.
+// One ORT session, one batch at a time. Without this a fast scroll fires several
+// overlapping inferences and they fight over the same session.
 let tail = Promise.resolve();
-const embed = (text, img) => {
+const embed = items => {
   const run = tail.then(async () => {
-    // Timed in here, not at the call site: a catalog page makes ~200 posts
-    // visible at once and they all queue behind this lock, so measuring from the
-    // caller reports mostly other posts' work.
     const t = performance.now();
-    const out = { txt: await embedText(text), img: await embedImage(img) };
-    out.ms = performance.now() - t;
-    return out;
+    const txts = await embedTexts(items.map(i => i.text));
+    const imgs = await embedImages(items.map(i => i.img));
+    const ms = (performance.now() - t) / items.length;
+    return items.map((_, i) => ({ txt: txts[i], img: imgs[i], ms }));
   });
   tail = run.catch(() => {});
   return run;
@@ -189,30 +231,42 @@ browser.runtime.onMessage.addListener(async msg => {
   await booted;
   switch (msg.type) {
     case "score": {
-      const known = taught.get(keyOf(msg.text, msg.img));
-      if (known !== undefined) return { p: known, ready: true, exact: true };
+      const out = new Array(msg.items.length);
+      const todo = [];
+      msg.items.forEach((it, i) => {
+        const known = taught.get(keyOf(it.text, it.img));
+        if (known !== undefined) out[i] = { p: known, ready: true, exact: true };
+        else todo.push(i);
+      });
 
-      const t = performance.now();
-      const e = await embed(msg.text, msg.img);
-      spent += e.ms;
-      queued += performance.now() - t - e.ms;
-      // Chatty for the first few: call 1 carries ONNX session warmup and is
-      // wildly unrepresentative of steady state.
-      if (++scored <= 5 || scored % 25 === 0)
-        console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms avg`
-          + ` = ${(fetched / scored) | 0}ms image fetch + ${((spent - fetched) / scored) | 0}ms inference`
-          + ` (queued ${(queued / scored) | 0}ms)`);
-      // ready=false means the score is not yet meaningful and nothing should be
-      // hidden on the strength of it. See usable() in model.js.
-      const p = model.score(e.img, e.txt);
-      // Only posts the model left alone. If it flagged one and you didn't
-      // correct it, that's agreement -- recording a contradicting "fine" would
-      // train against the very thing you asked it to catch.
-      if (p <= threshold) noteSeen(e, keyOf(msg.text, msg.img));
-      return { p, ready: usable(labels) };
+      if (todo.length) {
+        const t = performance.now();
+        const es = await embed(todo.map(i => msg.items[i]));
+        queued += performance.now() - t - es[0].ms * todo.length;
+
+        todo.forEach((i, k) => {
+          const e = es[k];
+          spent += e.ms;
+          const p = model.score(e.img, e.txt);
+          // Only posts the model left alone. If it flagged one and you didn't
+          // correct it, that's agreement -- recording a contradicting "fine"
+          // would train against the very thing you asked it to catch.
+          if (p <= threshold) noteSeen(e, keyOf(msg.items[i].text, msg.items[i].img));
+          // ready=false means the score isn't meaningful yet and nothing should
+          // be hidden on the strength of it. See usable() in model.js.
+          out[i] = { p, ready: usable(labels) };
+
+          // Per-batch first: the cumulative average is dragged up for a long
+          // time by the warmup batches and hides where throughput settled.
+          if (++scored <= 5 || scored % 25 === 0)
+            console.log(`sieve: ${scored} scored, ${e.ms | 0}ms/post in this batch of ${todo.length}`
+              + ` (${(spent / scored) | 0}ms cumulative, ${(fetched / scored) | 0}ms of it fetch)`);
+        });
+      }
+      return out;
     }
     case "label": {
-      const e = await embed(msg.text, msg.img);
+      const [e] = await embed([{ text: msg.text, img: msg.img }]);
       const key = keyOf(msg.text, msg.img);
       // Replaces, not stacks -- including any weak "seen" entry for this post,
       // which a click supersedes outright.

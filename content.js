@@ -36,22 +36,23 @@ async function run() {
     return r.bottom < 0 ? -r.bottom : r.top > innerHeight ? r.top - innerHeight : 0;
   };
 
+  // On WebGPU a batch of 16 costs the same wall-clock as a batch of 1, so this
+  // is close to free. Kept modest rather than whole-page because the queue
+  // re-sorts between batches -- that's what lets it follow your scrolling.
+  const BATCH = 16;
+
   let pumping = false;
   async function pump() {
     if (pumping) return;
     pumping = true;
     while (pending.size) {
-      // ponytail: O(n) rect reads to choose each post, so O(n^2) to drain a page.
-      // At ~200 posts that's noise beside one ~300ms inference, and re-reading
-      // position every time means it follows your scrolling for free -- a
-      // priority assigned at enqueue time goes stale the moment you move.
-      let best = null, bestD = Infinity;
-      for (const p of pending) {
-        const d = distance(p);
-        if (d < bestD) { bestD = d; best = p; if (!d) break; }
-      }
-      pending.delete(best);
-      await classify(best);
+      // ponytail: sorts all pending each round, so O(n^2 log n) to drain a page.
+      // At ~200 posts that's noise beside one batch, and re-reading position
+      // every round means it tracks scrolling for free -- a priority assigned at
+      // enqueue time goes stale the moment you move.
+      const batch = [...pending].sort((a, b) => distance(a) - distance(b)).slice(0, BATCH);
+      for (const p of batch) pending.delete(p);
+      await classify(batch);
     }
     pumping = false;
   }
@@ -109,20 +110,24 @@ async function run() {
 
   // ---- scoring and teaching ----------------------------------------------
 
-  async function classify(post) {
+  async function classify(posts) {
     // web-ext reloads the background page on every source edit while content
     // scripts from the old generation keep running, so a dead-channel error here
-    // is routine during development. Leave the post alone rather than throwing
-    // once per post on the page.
+    // is routine during development. Leave the posts alone rather than throwing.
     const res = await browser.runtime.sendMessage({
-      type: "score", text: site.text(post), img: site.image(post),
+      type: "score",
+      items: posts.map(p => ({ text: site.text(p), img: site.image(p) })),
     }).catch(() => null);
     if (!res) return;
 
-    // exact: you marked this precise post, so it's a stored fact and warmup
-    // doesn't apply. Otherwise the score only acts once both classes exist.
-    if (res.exact) return set(post, { p: res.p, mark: res.p ? "hide" : "keep" });
-    set(post, { p: res.p, auto: res.ready && res.p > threshold });
+    posts.forEach((post, i) => {
+      const r = res[i];
+      if (!r) return;
+      // exact: you marked this precise post, so it's a stored fact and warmup
+      // doesn't apply. Otherwise the score only acts once both classes exist.
+      if (r.exact) return set(post, { p: r.p, mark: r.p ? "hide" : "keep" });
+      set(post, { p: r.p, auto: r.ready && r.p > threshold });
+    });
   }
 
   async function teach(post, y) {

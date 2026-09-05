@@ -54,14 +54,25 @@ Every post gets scored, nearest-to-the-viewport first, re-evaluated after each
 one so it follows your scrolling. Skipping offscreen posts would be cheaper but
 you'd then watch each one flash into view before being hidden.
 
-Measured per post on a 4chan catalog: **~3 ms image fetch** (it's already decoded
-in the page) **+ ~250–330 ms inference**.
+Posts are embedded **16 at a time**, which is the single biggest thing about this
+pipeline's speed. Vision-tower cost per image:
 
-WebGPU is implemented and works, but it is *slower here* — 358–563 ms against
-WASM's 254–335 ms, at twice the download, because ViT-B/32 at batch-of-1 is
-dispatch-bound rather than compute-bound. `BACKENDS` in `background.js` tries
-wasm first for that reason. Batching several images into one forward pass is the
-change that would make the GPU worth it.
+|              | batch 1 | batch 4 | batch 16 |
+|--------------|---------|---------|----------|
+| wasm / q8    | 125 ms  | 113 ms  | 111 ms   |
+| webgpu/ fp16 | 101 ms  | 25 ms   | **6.3 ms** |
+
+A WebGPU call costs ~101 ms whether it carries 1 image or 16 — it's dispatch-
+bound, and the compute was free all along. So unbatched WebGPU actually *loses*
+to WASM, which is compute-bound and flat. Batched, it wins by ~18x. WASM is kept
+as a fallback and batching costs it nothing.
+
+End to end on a 4chan catalog that's ~250–330 ms per post unbatched, against
+**~25 ms per post** batched on WebGPU, of which ~1 ms is image fetch. The price
+is fp16 weights, roughly twice the q8 download.
+
+Batch size is deliberately 16 rather than the whole page: the queue re-sorts
+between batches, and that's what lets it follow your scrolling.
 
 ## Dev
 
