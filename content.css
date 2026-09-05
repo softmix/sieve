@@ -1,5 +1,5 @@
-/* Floated so it rides alongside the post's own header line instead of pushing
-   every post down by a row -- on a board index that's 78 posts of extra scroll. */
+/* Floated so it rides alongside the post's header line rather than adding a row
+   to every post on the page. */
 .sieve-tag {
   float: right;
   display: inline-flex;
@@ -9,23 +9,17 @@
   font: 11px/1.4 monospace;
   color: inherit;
   opacity: 0.45;
-  /* Above whatever the site or another extension puts over the post -- in the
-     catalog the whole preview is a link, and clicks were landing on that. */
+  /* Above the post's content, deliberately below the hover preview at 60. */
   position: relative;
-  z-index: 2147483647;
-  isolation: isolate;
+  z-index: 10;
 }
 
-/* Reddit's entry column is wide; floated right the badge ends up nowhere near
-   the post it describes. */
 .sieve-tag[data-side="left"] {
   float: left;
   margin-left: 0;
   margin-right: 6px;
 }
 
-/* Sites whose posts have no header row to sit beside: floated, the badge lands
-   to the left of a narrow image rather than above it. */
 .sieve-tag[data-block] {
   float: none;
   display: flex;
@@ -52,13 +46,12 @@
 
 .sieve-tag button:hover { opacity: 1; }
 
-/* Marked posts stay legible without hovering -- during the initial fill you want
-   to see at a glance which ones you've already done. */
+/* Marked posts stay legible without hovering, so you can see what's done. */
 .sieve-tag[data-mark] { opacity: 1; }
 .sieve-tag[data-mark="hide"] { color: #c0392b; }
 .sieve-tag[data-mark="keep"] { color: #27803d; }
 
-/* Collapsed. The badge is the only thing left, so it has to hold the line by
-   itself -- a float would leave the container zero-height. */
+/* Collapsed: the badge is all that's left, and a float would leave the
+   container zero-height. */
 .sieve-hidden > *:not(.sieve-tag) { display: none !important; }
 .sieve-hidden > .sieve-tag { float: none; display: flex; }

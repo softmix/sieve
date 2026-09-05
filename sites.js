@@ -1,30 +1,25 @@
-// Per-site DOM adapters. The model is shared across every site and every page
-// type -- only the scraping differs, and everything downstream sees the same
-// (text, imageUrl).
+// Per-site DOM adapters; only the scraping differs, the model is shared.
 //
-// `mount` picks the element the badge is injected into and that collapses when a
-// post is hidden -- point it at the site's own visually-boxed element, or the
-// badge ends up outside the post rather than inside it. Defaults to `post`.
+// Matched in order, first hit wins, so narrower `path` entries go above the
+// catch-all for the same host. A new host also needs adding to manifest.json's
+// content_scripts.matches -- nothing enforces that pairing, so check it first if
+// a site does nothing at all.
 //
-// Matched in order, first hit wins, so put narrower `path` entries above the
-// catch-all for the same host. Adding a host also means adding it to
-// manifest.json's content_scripts.matches; nothing enforces that pairing, so if
-// a new site does nothing at all, check there first.
-//
-// image() returns the thumbnail on purpose. It's already decoded in the page so
-// the fetch is free, and CLIP resizes to 224px anyway. Point it at the full
-// image if classification turns out to need the detail.
+// mount:  element the badge goes in, and that collapses when hidden. Should be
+//         the site's own boxed element, else the badge sits outside the post.
+//         Defaults to `post`.
+// block:  give the badge its own line instead of floating it.
+// side:   "left" to float left.
+// image:  the thumbnail, deliberately -- already decoded in the page, and CLIP
+//         resizes to 224px anyway.
 // eslint-disable-next-line no-unused-vars
 const SITES = [
   {
-    // Catalog is client-rendered from a `var catalog` blob into a DOM that
-    // shares nothing with the board index: thread previews, not posts.
+    // Client-rendered thread previews; shares no DOM with the board index.
     host: "boards.4chan.org",
     path: /^\/[^/]+\/catalog/,
     post: ".thread",
-    // A thread preview has no header row to sit beside, and a floated badge ends
-    // up left of a narrow image rather than above it. Give it its own line.
-    block: true,
+    block: true,   // no header row to sit beside, and narrow images sit next to a float
     text: p => p.querySelector(".teaser")?.innerText ?? "",
     image: p => p.querySelector("img.thumb")?.src ?? null,
     link: p => p.querySelector("a[href*='/thread/']")?.href ?? null,
@@ -42,9 +37,7 @@ const SITES = [
     host: "old.reddit.com",
     post: ".thing",
     mount: p => p.querySelector(".entry"),
-    // Reddit's entry column is wide, so floating right puts the badge miles from
-    // the post it belongs to.
-    side: "left",
+    side: "left",   // the entry column is wide; floated right lands nowhere near the post
     text: p => [".title", ".md"].map(s => p.querySelector(s)?.innerText ?? "").join("\n").trim(),
     image: p => p.querySelector(".thumbnail img")?.src ?? null,
     link: p => (p.dataset.permalink ? location.origin + p.dataset.permalink : null)

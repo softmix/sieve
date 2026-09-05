@@ -28,13 +28,9 @@ $("seenMax").onchange = e => {
 async function stats() {
   const s = await send({ type: "stats" });
   const seen = s.pos + s.neg - s.taught;
-  // holdout is null until there's enough to split -- say so rather than print a
-  // number that means nothing.
   const h = s.holdout
     ? `holdout accuracy ${(s.holdout.acc * 100).toFixed(0)}% on ${s.holdout.n} held-out labels`
     : "holdout accuracy: not enough labels yet";
-  // Trained on one class this model saturates and scores everything ~1.00, so it
-  // stays off rather than hiding the whole page. Be explicit about that.
   const state = s.ready
     ? "filtering active"
     : `filtering OFF — needs ${s.need} of each class (have ${s.pos} hide, ${s.neg} keep)`;
@@ -63,8 +59,7 @@ async function calls() {
     const li = document.createElement("li");
 
     const img = document.createElement("img");
-    // c.img is the thumbnail, c.url the post it came from. Labels made before
-    // url was stored have none, so fall back to opening the image.
+    // c.img is the thumbnail, c.url the post. Labels predating url have none.
     if (c.img) img.src = c.img;
     img.alt = "";
     img.loading = "lazy";
@@ -90,7 +85,7 @@ async function calls() {
       b.textContent = glyph;
       b.title = title;
       b.onclick = async () => {
-        li.remove();               // optimistic; these are quick to click through
+        li.remove();               // optimistic, so these are quick to click through
         await send({ type: "relabel", key: c.key, y });
         stats();
       };
@@ -107,8 +102,7 @@ $("more").onclick = calls;
 $("export").onclick = async () => {
   const labels = await send({ type: "export" });
   const url = URL.createObjectURL(new Blob([JSON.stringify(labels)], { type: "application/json" }));
-  // <a download> rather than browser.downloads, which would cost a permission
-  // for something the DOM already does.
+  // <a download> rather than browser.downloads, which costs a permission.
   Object.assign(document.createElement("a"), { href: url, download: "sieve-labels.json" }).click();
 };
 

@@ -3,27 +3,25 @@ import assert from "node:assert/strict";
 import { K, Model, ZERO, l2, fit, holdout, usable, counts, SEEN_WEIGHT } from "./model.js";
 
 // Synthetic stand-ins for CLIP embeddings. jit() nudges one toward a fresh
-// random direction so train and test never see the same vector -- anything that
-// only memorises noise won't pass. `a` is relative to the unit signal, so the
-// perturbation direction has to be normalised too or it swamps what it perturbs.
+// direction so train and test never see the same vector. `a` is relative to the
+// unit signal, so the perturbation must be normalised too or it swamps it.
 const unit = s => l2(Array.from({ length: K }, (_, i) => Math.sin(s * (i + 1) * 12.9898)));
 const jit = (v, k, a = 0.3) => {
   const n = unit(k * 3.7 + 0.5);
   return l2(Array.from(v, (x, i) => x + a * n[i]));
 };
 
-// Real CLIP embeddings are anisotropic: they sit in a narrow cone, so two
-// completely unrelated images still have cosine ~0.8. Near-orthogonal test
-// vectors make every test here easier than reality -- and specifically hide the
-// one-class blow-up below, which measures 0.86 orthogonal but 0.98 in the cone.
+// Real CLIP embeddings are anisotropic: they sit in a narrow cone, so unrelated
+// images still have cosine ~0.8. Near-orthogonal test vectors would make every
+// test here easier than reality.
 const CONE = unit(42);
 const emb = s => l2(Array.from(unit(s), (x, i) => x + 2 * CONE[i]));
 
 const [IA, IB, TA, TB] = [emb(1), emb(2), emb(3), emb(4)];
 
 // Two conjunctions that disagree: image A is only bad with text A, image B only
-// with text B, and the crossed pairings are fine. This is the real shape of
-// "the combination is the problem" -- see the concat test below for why it matters.
+// with text B, crossed pairings fine. The real shape of "the combination is the
+// problem", and not expressible without the interaction block.
 const PAIRS = [[IA, TA, 1], [IB, TB, 1], [IA, TB, 0], [IB, TA, 0]];
 
 const train = (m, hook) => {
@@ -49,10 +47,9 @@ test("learns a combination that neither modality predicts alone", () => {
 });
 
 test("without the interaction block the same task is unlearnable", () => {
-  // Zeroing w[2K..] after every step is exactly a plain [img | txt] concat model.
-  // Summing the four constraints gives c(IA)+c(TA)+c(IB)+c(TB) both above and
-  // below 2*threshold, so no weighting can satisfy them. This is the whole
-  // reason feats() carries a product block.
+  // Zeroing w[2K..] each step is exactly a plain [img | txt] concat model.
+  // Summing the four constraints puts c(IA)+c(TA)+c(IB)+c(TB) both above and
+  // below 2*threshold, so no weighting satisfies them.
   const err = worstErr(train(new Model(), m => m.w.fill(0, 2 * K)));
   assert.ok(err > 0.4, `concat-only should fail but got ${err.toFixed(3)}`);
 });
@@ -74,10 +71,8 @@ test("fit refits from the log and is order-independent", () => {
 
   assert.ok(worstErr(fit(labels)) < 0.3);
 
-  // Same labels in reverse order must hide the same posts. Not bit-identical
-  // weights -- the shuffle visits them differently, so they land ~0.02% apart in
-  // norm; what matters is that the order you happened to click in doesn't change
-  // the verdict, which is the thing raw online learning gets wrong.
+  // Same labels reversed must hide the same posts. Not bit-identical weights --
+  // the shuffle visits them differently -- just the same verdicts.
   const [a, b] = [fit(labels), fit([...labels].reverse())];
   const drift = Math.max(...PAIRS.map(([i, t]) =>
     Math.abs(a.score(jit(i, 7001), jit(t, 7992)) - b.score(jit(i, 7001), jit(t, 7992)))));
@@ -85,8 +80,8 @@ test("fit refits from the log and is order-independent", () => {
 });
 
 test("one-class labels are rejected instead of hiding everything", () => {
-  // The bug this guards: hide two posts, reload, and every post on the page is
-  // gone at 1.00. Nothing counteracts the bias when every label says y=1.
+  // Guards: hide two posts, reload, and the whole page is gone at 1.00, because
+  // nothing counteracts the bias when every label says y=1.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   assert.equal(usable(onlyHides), false);
   assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0, taught: 4 });
@@ -99,8 +94,8 @@ test("one-class labels are rejected instead of hiding everything", () => {
 });
 
 test("rare positives survive a pile of negatives", () => {
-  // Class weighting: without it the cheapest way to fit 4 hides against 200
-  // keeps is to never hide anything.
+  // Without class weighting, the cheapest fit for 4 hides against 200 keeps is
+  // to hide nothing.
   const labels = [];
   for (let k = 0; k < 4; k++) labels.push({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 });
   for (let k = 0; k < 200; k++) labels.push({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0 });
@@ -110,9 +105,7 @@ test("rare positives survive a pile of negatives", () => {
 });
 
 test("a pile of weak 'seen' labels cannot outvote a few explicit hides", () => {
-  // The point of implicit negatives is that scrolling past 300 posts stands in
-  // for clicking ✓ 300 times. It only works if they stay quiet: the cheapest way
-  // to fit 4 hides against 300 keeps is to hide nothing at all.
+  // Implicit negatives only work if they stay quiet enough not to swamp clicks.
   const labels = [];
   for (let k = 0; k < 4; k++) labels.push({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1, src: "hide" });
   for (let k = 0; k < 300; k++)
@@ -127,10 +120,9 @@ test("a pile of weak 'seen' labels cannot outvote a few explicit hides", () => {
 });
 
 test("scores actually clear the default threshold, not just rank correctly", () => {
-  // The failure this catches is invisible to accuracy: a model can separate the
-  // classes perfectly (means 0.83 vs 0.17) while squashing every score toward
-  // 0.5, so nothing crosses 0.85 and the filter does nothing at all. Ranking is
-  // not enough -- the numbers have to land where the threshold is.
+  // Invisible to accuracy: a model can separate the classes perfectly while
+  // squashing every score toward 0.5, so nothing crosses 0.85 and the filter
+  // does nothing. Ranking isn't enough, the numbers must land at the threshold.
   const labels = [];
   for (let k = 0; k < 5; k++)
     for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });

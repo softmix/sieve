@@ -4,25 +4,22 @@ const site = SITES.find(s =>
 if (site) run();
 
 async function run() {
-  // hiding=false still scores everything and shows the badges, it just doesn't
-  // collapse anything. That's the mode you want the first time you turn this
-  // loose on a real browsing session, and for tuning the threshold afterwards.
+  // hiding=false still scores and badges everything, it just doesn't collapse.
   let { threshold, hiding } = await browser.storage.local.get({ threshold: 0.85, hiding: true });
   browser.storage.onChanged.addListener(c => {
     if (c.threshold) threshold = c.threshold.newValue;
     if (c.hiding) hiding = c.hiding.newValue;
   });
 
-  // Right-click still works anywhere in a post; the buttons are for bulk work.
+  // Right-click works anywhere in a post; the badge buttons are for bulk work.
   let target = null;
   addEventListener("contextmenu", e => (target = e.target.closest?.(site.post)), true);
   browser.runtime.onMessage.addListener(msg => {
     if (msg.type === "teach" && target) teach(target, msg.y);
   });
 
-  // Every post gets scored eventually, nearest-to-viewport first. Skipping
-  // offscreen posts would be cheaper but you'd then see each one flash into view
-  // before being hidden, which defeats the point.
+  // Every post gets scored, nearest-to-viewport first. Skipping offscreen posts
+  // would be cheaper but they'd then flash into view before being hidden.
   const pending = new Set();
   const seen = new WeakSet();
 
@@ -42,9 +39,8 @@ async function run() {
     return r.bottom < 0 ? -r.bottom : r.top > innerHeight ? r.top - innerHeight : 0;
   };
 
-  // On WebGPU a batch of 16 costs the same wall-clock as a batch of 1, so this
-  // is close to free. Kept modest rather than whole-page because the queue
-  // re-sorts between batches -- that's what lets it follow your scrolling.
+  // Modest rather than whole-page: the queue re-sorts between batches, which is
+  // what lets it follow scrolling.
   const BATCH = 16;
 
   let pumping = false;
@@ -52,10 +48,9 @@ async function run() {
     if (pumping) return;
     pumping = true;
     while (pending.size) {
-      // ponytail: sorts all pending each round, so O(n^2 log n) to drain a page.
-      // At ~200 posts that's noise beside one batch, and re-reading position
-      // every round means it tracks scrolling for free -- a priority assigned at
-      // enqueue time goes stale the moment you move.
+      // ponytail: re-sorts all pending each round, O(n^2 log n) to drain a page.
+      // Negligible beside one batch, and re-reading position each round is what
+      // tracks scrolling -- a priority set at enqueue time goes stale.
       const batch = [...pending].sort((a, b) => distance(a) - distance(b)).slice(0, BATCH);
       for (const p of batch) pending.delete(p);
       await classify(batch);
@@ -68,8 +63,7 @@ async function run() {
   const state = new WeakMap();
 
   // The element the badge lives in and that collapses when hidden. Sites box
-  // their posts in an inner element; mounting on the outer one puts the badge
-  // visually outside the post.
+  // their posts in an inner element; the outer one puts the badge outside it.
   const host = post => site.mount?.(post) ?? post;
 
   function badge(post) {
@@ -83,11 +77,8 @@ async function run() {
     if (site.side) el.dataset.side = site.side;
     el.innerHTML = '<span class="sieve-p"></span>';
 
-    // Peek. Without this the only way to see a hidden post is ✓, which asserts
-    // "this is fine" -- you'd have to label a post before you could look at it,
-    // and peeking at correctly-hidden posts would poison the label set.
-    // Same treatment as the buttons below: pointerdown wins the race against the
-    // wrapping <a> and other extensions' handlers.
+    // Peek: reveals without labelling. ✓ asserts "this is fine", so using it to
+    // look at a hidden post would poison the label set.
     const p = el.querySelector(".sieve-p");
     p.addEventListener("pointerdown", e => {
       e.preventDefault();
@@ -101,10 +92,9 @@ async function run() {
       const b = document.createElement("button");
       b.textContent = glyph;
       b.title = title;
-      // Catalog thread previews are wrapped in an <a>, and other extensions bind
-      // their own handlers, so a plain onclick loses the race and navigates
-      // instead. Act on pointerdown -- the earliest event there is -- and swallow
-      // every later one in the sequence so nothing downstream ever sees a click.
+      // Catalog previews are wrapped in an <a> and other extensions bind their
+      // own handlers, so a plain onclick loses the race and navigates instead.
+      // Act on pointerdown and swallow every later event in the sequence.
       b.addEventListener("pointerdown", e => {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -127,8 +117,8 @@ async function run() {
     const el = badge(post);
     // Must be absent, not empty -- the stylesheet keys off [data-mark] existing.
     if (s.mark) el.dataset.mark = s.mark; else delete el.dataset.mark;
-    // With hiding switched off, a would-be-hidden post reads as revealed rather
-    // than claiming to be hidden while plainly visible.
+    // With hiding off, a would-be-hidden post reads as revealed rather than
+    // claiming to be hidden while plainly visible.
     const shown = s.peek || !hiding;
     el.querySelector(".sieve-p").textContent =
       hide ? `hidden ${shown ? "▾" : "▸"}` :    // click to peek, without labelling it
@@ -143,9 +133,8 @@ async function run() {
   // ---- scoring and teaching ----------------------------------------------
 
   async function classify(posts) {
-    // web-ext reloads the background page on every source edit while content
-    // scripts from the old generation keep running, so a dead-channel error here
-    // is routine during development. Leave the posts alone rather than throwing.
+    // Dead channel is routine in development: web-ext reloads the background
+    // page while old-generation content scripts keep running.
     const res = await browser.runtime.sendMessage({
       type: "score",
       items: posts.map(p => ({ text: site.text(p), img: site.image(p), url: site.link?.(p) ?? null })),
@@ -155,8 +144,7 @@ async function run() {
     posts.forEach((post, i) => {
       const r = res[i];
       if (!r) return;
-      // exact: you marked this precise post, so it's a stored fact and warmup
-      // doesn't apply. Otherwise the score only acts once both classes exist.
+      // exact = you marked this precise post, so warmup doesn't apply.
       if (r.exact) return set(post, { p: r.p, mark: r.p ? "hide" : "keep" });
       set(post, { p: r.p, auto: hiding && r.ready && r.p > threshold });
     });
@@ -167,8 +155,7 @@ async function run() {
 
     const res = await browser.runtime.sendMessage({
       type: "label", y, text: site.text(post), img: site.image(post),
-      // Stored so the options page can link back to the post. The image URL
-      // alone opens a picture with no context.
+      // Stored so the options page can link back to the post itself.
       url: site.link?.(post) ?? null,
     }).catch(() => null);
     if (!res) return;
@@ -180,7 +167,7 @@ async function run() {
   }
 
   // Last: scan() reaches set() and the badge helpers, which are `const` and so
-  // are still in the temporal dead zone anywhere above this line.
+  // are in the temporal dead zone anywhere above this line.
   new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
   scan();
 }

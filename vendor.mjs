@@ -1,10 +1,9 @@
 // Copies the ONNX runtime out of node_modules so nothing is fetched from a CDN
 // at run time. Remote *code* is what gets an add-on rejected; model weights are
-// data and stay remote (first run downloads them into the browser cache).
+// data and stay remote.
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 
-// We don't ship .map files, so leaving the reference behind means a
-// "Source map error: NetworkError" per module in the extension debug console.
+// We don't ship .map files, so the reference would log an error per module.
 const strip = s => s.replace(/^\/\/# sourceMappingURL=.*$/gm, "");
 
 const write = (from, to) => writeFileSync(`vendor/${to}`, strip(readFileSync(from, "utf8")));
@@ -19,10 +18,9 @@ write("node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.mjs",
 copyFileSync("node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.wasm",
   "vendor/ort-wasm-simd-threaded.asyncify.wasm");
 
-// transformers.web.min.js leaves onnxruntime as bare specifiers for a bundler to
-// resolve. An import map would fix it without a build step, but it has to be an
-// inline <script> and the extension CSP blocks those -- so rewrite the two
-// specifiers here instead of pulling in a bundler for it.
+// transformers.web.min.js leaves onnxruntime as bare specifiers for a bundler.
+// An import map would fix that, but it must be an inline <script> and the
+// extension CSP blocks those, so rewrite the specifiers instead.
 const REMAP = {
   "onnxruntime-common": "./onnxruntime-common/index.js",
   "onnxruntime-web/webgpu": "./ort.webgpu.mjs",
@@ -35,8 +33,7 @@ for (const [bare, rel] of Object.entries(REMAP)) {
 }
 writeFileSync("vendor/transformers.js", src);
 
-// Multi-file ESM package -- index.js imports ./tensor.js and friends, so the
-// whole tree has to come along.
+// Multi-file ESM package: index.js imports its siblings.
 const common = "node_modules/onnxruntime-common/dist/esm";
 const js = readdirSync(common).filter(f => f.endsWith(".js"));
 for (const f of js) write(`${common}/${f}`, `onnxruntime-common/${f}`);

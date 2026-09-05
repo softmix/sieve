@@ -1,5 +1,4 @@
-// Replaces the make/jq/sponge release target from the other extensions -- same
-// steps, but node is installed on both Windows and WSL and those aren't.
+// Bumps updates.json, pushes, and cuts the GitHub release.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, copyFileSync, readdirSync } from "node:fs";
 
@@ -9,22 +8,19 @@ const run = (cmd, args) => execFileSync(cmd, args, { stdio: "inherit" });
 const { name, version, browser_specific_settings: bss } = JSON.parse(readFileSync("manifest.json"));
 const id = bss.gecko.id;
 
-// Everything checkable, checked before anything is written. The first version of
-// this wrote updates.json and *then* demanded a clean tree, so any actual version
-// bump failed on its own write -- it could only pass when it had nothing to do.
+// Checked before anything is written: writing updates.json first would dirty the
+// tree and fail this check on every real version bump.
 if (sh("git", ["status", "--porcelain"])) throw new Error("git state not clean");
 if (!sh("git", ["remote"])) throw new Error("no git remote -- create the GitHub repo first");
 
-// Matched on version, not just "first .xpi in the directory" -- signing leaves
-// previous versions behind, and picking one of those would ship the wrong build
-// under the right tag.
+// Matched on version: signing leaves older artifacts behind, and picking one
+// would ship the wrong build under the right tag.
 const xpi = readdirSync("web-ext-artifacts").find(f => f.endsWith(`-${version}.xpi`));
 if (!xpi) throw new Error(`no signed xpi for ${version} -- run \`source .env && npm run sign\` first`);
 
-// Firefox fetches updates.json from raw.githubusercontent at the URL baked into
-// the manifest, so it has to be committed and pushed, not merely written. Both
-// that and the release asset are fetched unauthenticated: the repo must be public
-// or auto-update silently stops working.
+// Firefox fetches updates.json from the URL in the manifest, so it must be
+// pushed, not merely written. Both it and the release asset are fetched
+// unauthenticated: the repo must be public or auto-update stops working.
 const link = `https://github.com/softmix/${name}/releases/download/${version}/${name}.xpi`;
 writeFileSync("updates.json",
   JSON.stringify({ addons: { [id]: { updates: [{ version, update_link: link }] } } }, null, 2) + "\n");

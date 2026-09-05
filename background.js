@@ -8,23 +8,11 @@ const MODEL = "Xenova/clip-vit-base-patch32";
 
 env.allowLocalModels = false;   // weights come from HF on first run, then live in the browser cache
 env.backends.onnx.wasm.wasmPaths = browser.runtime.getURL("vendor/");
-// Extension pages get no COOP/COEP, so no SharedArrayBuffer, so no ORT threads.
-// Left at the default it tries anyway and warns on every single load.
+// No COOP/COEP on extension pages, so no SharedArrayBuffer and no ORT threads.
 env.backends.onnx.wasm.numThreads = 1;
 
-// Tried in order, first one that loads *and* runs wins.
-//
-// WebGPU is only worth it batched, and dramatically so. Measured ms per image
-// for the vision tower:
-//
-//              batch 1   batch 4   batch 16   batch 32
-//   wasm/q8      125       113       111        112      <- compute-bound, flat
-//   webgpu/fp16  101        25         6.3        6.3    <- 101ms/call, flat
-//
-// The WebGPU *call* costs ~101ms whether it carries 1 image or 16, so at batch 1
-// it loses to wasm outright and at batch 16 it wins ~18x. Everything downstream
-// batches for that reason; see embedTexts/embedImages. fp16 is about twice the
-// download of q8, which is the price.
+// First one that loads *and* runs wins. A WebGPU call costs ~101ms whether it
+// carries 1 image or 16, so it only beats wasm when batched -- see README.
 const BACKENDS = [
   { device: "webgpu", dtype: "fp16" },
   { device: "wasm", dtype: "q8" },
@@ -49,10 +37,8 @@ const load = () => (engine ??= (async () => {
         CLIPTextModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
         CLIPVisionModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
       ]);
-      // Loading successfully doesn't prove the backend can run -- WebGPU tends
-      // to fail on the first actual inference, not at construction. Warming up
-      // here moves the fallback to startup instead of the first post, and eats
-      // the session-init latency spike while we're at it.
+      // WebGPU fails on first inference, not at construction, so exercise it
+      // here to make the fallback happen at startup rather than mid-page.
       await vis(await proc(new RawImage(new Uint8ClampedArray(224 * 224 * 3), 224, 224, 3)));
       await txt(tok(["warmup"], { padding: true, truncation: true }));
 
@@ -66,9 +52,7 @@ const load = () => (engine ??= (async () => {
   throw new Error("sieve: no working inference backend");
 })());
 
-// The background page is persistent (MV2), so these survive navigation and even
-// tab close -- which matters a lot on an imageboard, where the same file is
-// reposted across threads all day.
+// Persistent background page (MV2), so these survive navigation and tab close.
 const cache = { img: new Map(), txt: new Map() };
 const keep = (m, k, v) => {
   if (m.size > 3000) m.clear();   // ponytail: whole-cache dump, LRU if it ever shows in a profile
@@ -76,18 +60,12 @@ const keep = (m, k, v) => {
   return v;
 };
 
-// Everything below embeds in batches, because on WebGPU one call costs the same
-// whether it carries 1 image or 16: measured 101ms/call flat, i.e. 101ms/img at
-// batch 1 but 6.3ms/img at batch 16. WASM is compute-bound and flat at ~112ms/img
-// either way, so batching costs it nothing.
-
 async function embedTexts(texts) {
   const out = new Array(texts.length);
   const { tok, txt } = await load();
 
-  // CLIP's text tower stops at 77 tokens and forum posts routinely run longer,
-  // so chunk and mean-pool rather than silently classify only the first sentence.
-  // Every chunk of every post goes into one flat batch; `owner` maps back.
+  // CLIP's text tower caps at 77 tokens and posts run longer, so chunk and
+  // mean-pool. Every chunk of every post shares one batch; `owner` maps back.
   const chunks = [], owner = [];
   texts.forEach((raw, i) => {
     const s = (raw || "").trim();
@@ -117,8 +95,7 @@ async function embedImages(srcs) {
   const out = new Array(srcs.length);
   const raws = [], need = [];
 
-  // Fetches run concurrently even though inference doesn't -- they're the one
-  // part of this that genuinely parallelises.
+  // Fetches parallelise even though inference doesn't.
   const t = performance.now();
   await Promise.all(srcs.map(async (src, i) => {
     if (!src) return void (out[i] = ZERO);
@@ -141,8 +118,7 @@ async function embedImages(srcs) {
   return out;
 }
 
-// One ORT session, one batch at a time. Without this a fast scroll fires several
-// overlapping inferences and they fight over the same session.
+// One ORT session, so one batch at a time.
 let tail = Promise.resolve();
 const embed = items => {
   const run = tail.then(async () => {
@@ -156,8 +132,7 @@ const embed = items => {
   return run;
 };
 
-// storage.local round-trips typed arrays differently depending on backend, so
-// normalise rather than bet on which shape comes back.
+// storage.local round-trips typed arrays differently per backend.
 const toF32 = v => v instanceof Float32Array ? v
   : Float32Array.from(Array.isArray(v) ? v : Object.values(v));
 
@@ -165,13 +140,9 @@ let model = new Model();
 let labels = [];
 let scored = 0, spent = 0, queued = 0, fetched = 0;
 
-// Exact recall, in front of the model. A post you explicitly marked is a stored
-// fact, not a prediction -- it must stay hidden on reload even while the model
-// is still warming up and even if the model would score it 0.2. Generalising to
-// *other* posts is the model's job; remembering this one isn't.
-//
-// Only explicit labels go in here. A merely-seen post must stay scoreable, or it
-// would freeze at whatever the model thought the first time it scrolled past.
+// Exact recall, in front of the model: an explicitly marked post is a stored
+// fact, so it stays hidden regardless of what the model currently thinks. Only
+// explicit labels go in `taught` -- a merely-seen post must stay scoreable.
 const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
 let taught = new Map(), seenKeys = new Set();
 
@@ -184,16 +155,14 @@ function reindex() {
   }
 }
 
-// keyOf() builds `${url}\n${text}` and the text may itself contain newlines, so
-// split once, yielding the image url. The post's own link is stored separately
-// as `url` -- don't conflate them, spreading this over a label used to clobber it.
+// Splits a key back into its parts. Yields the *image* url; a label's own `url`
+// field is the post permalink, which is a different thing.
 const splitKey = key => {
   const i = key.indexOf("\n");
   return { img: key.slice(0, i), text: key.slice(i + 1) };
 };
 
-// Bounded, because these accrue on their own: every scored post adds one, so a
-// couple of catalog pages would otherwise put thousands through fit() on every
+// Bounded: every scored post adds one, and they all go through fit() on each
 // click. Oldest out. Explicit labels are never pruned.
 let seenMax = 300;
 let threshold = 0.85;
@@ -202,8 +171,7 @@ function noteSeen(e, key, url) {
   if (taught.has(key) || seenKeys.has(key)) return;
   const seen = labels.filter(l => l.src === "seen");
   if (seen.length >= seenMax) {
-    // Drops all excess in one pass, so lowering the setting takes effect on the
-    // next scored post rather than decaying one at a time.
+    // All excess in one pass, so lowering the setting takes effect immediately.
     const drop = new Set(seen.slice(0, seen.length - seenMax + 1));
     labels = labels.filter(l => !drop.has(l));
   }
@@ -212,8 +180,7 @@ function noteSeen(e, key, url) {
   soon();
 }
 
-// Refitting and writing storage on every scored post would be constant churn, so
-// implicit labels settle in batches. Explicit clicks still commit immediately.
+// Implicit labels settle in batches; explicit clicks commit immediately.
 let timer = null;
 const soon = () => {
   clearTimeout(timer);
@@ -263,16 +230,11 @@ browser.runtime.onMessage.addListener(async msg => {
           const e = es[k];
           spent += e.ms;
           const p = model.score(e.img, e.txt);
-          // Only posts the model left alone. If it flagged one and you didn't
-          // correct it, that's agreement -- recording a contradicting "fine"
-          // would train against the very thing you asked it to catch.
+          // Only posts the model left alone: if it flagged one and you didn't
+          // correct it, a contradicting "fine" would train against the catch.
           if (p <= threshold) noteSeen(e, keyOf(msg.items[i].text, msg.items[i].img), msg.items[i].url);
-          // ready=false means the score isn't meaningful yet and nothing should
-          // be hidden on the strength of it. See usable() in model.js.
           out[i] = { p, ready: usable(labels) };
 
-          // Per-batch first: the cumulative average is dragged up for a long
-          // time by the warmup batches and hides where throughput settled.
           if (++scored <= 5 || scored % 25 === 0)
             console.log(`sieve: ${scored} scored, ${e.ms | 0}ms/post in this batch of ${todo.length}`
               + ` (${(spent / scored) | 0}ms cumulative, ${(fetched / scored) | 0}ms of it fetch)`);
@@ -283,8 +245,7 @@ browser.runtime.onMessage.addListener(async msg => {
     case "label": {
       const [e] = await embed([{ text: msg.text, img: msg.img }]);
       const key = keyOf(msg.text, msg.img);
-      // Replaces, not stacks -- including any weak "seen" entry for this post,
-      // which a click supersedes outright.
+      // Replaces rather than stacks, including any weak "seen" entry.
       labels = labels.filter(l => l.key !== key);
       labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, url: msg.url, ts: Date.now() });
       reindex();
@@ -299,9 +260,8 @@ browser.runtime.onMessage.addListener(async msg => {
         holdout: holdout(labels), backend,
       };
 
-    // Uncertainty sampling: the posts the model is least sure about are the ones
-    // where a label teaches it the most. They're drawn from the seen pool, which
-    // already carries embeddings, so labelling one costs no inference at all.
+    // Uncertainty sampling: whichever posts sit nearest 0.5. Drawn from the seen
+    // pool, so they already carry embeddings and cost no inference to label.
     case "closeCalls": {
       return labels
         .filter(l => l.src === "seen")
@@ -311,8 +271,7 @@ browser.runtime.onMessage.addListener(async msg => {
         .map(s => ({ ...s, ...splitKey(s.key) }));
     }
 
-    // Promote a seen post to an explicit label in place. Reuses its stored
-    // embeddings rather than re-fetching and re-embedding the post.
+    // Promote a seen post in place, reusing its stored embeddings.
     case "relabel": {
       const l = labels.find(x => x.key === msg.key);
       if (!l) return { gone: true };
@@ -322,15 +281,12 @@ browser.runtime.onMessage.addListener(async msg => {
       return { ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS };
     }
     case "export":
-      // Everything needed to rebuild the model elsewhere, weights and origin
-      // included -- not just the embeddings.
+      // Everything needed to rebuild the model elsewhere.
       return labels.map(l => ({
         img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, url: l.url, ts: l.ts,
       }));
 
-    // Restoring a backup, or carrying labels from the dev profile into your real
-    // browser. Merges by key so importing twice is a no-op rather than a
-    // duplicate, and imported entries win.
+    // Merges by key, so importing the same file twice is a no-op.
     case "import": {
       const ok = l => l && (l.y === 0 || l.y === 1)
         && l.img?.length === K && l.txt?.length === K;
@@ -351,14 +307,12 @@ browser.runtime.onMessage.addListener(async msg => {
     case "reset":
       labels = [];
       model = new Model();
-      reindex();   // or exact recall keeps hiding posts that no longer have labels
+      reindex();   // else exact recall keeps hiding posts whose labels are gone
       await browser.storage.local.set({ labels });
       return { ok: true };
   }
 });
 
-// Both directions need to be one click. Positives alone can't train this model,
-// and in practice you spot false positives more often than you spot new hides.
 const MENU = { "sieve-hide": "sieve: hide posts like this", "sieve-keep": "sieve: this post is fine" };
 for (const [id, title] of Object.entries(MENU))
   browser.contextMenus.create({ id, title, contexts: ["page", "selection", "image", "link"] });
@@ -366,6 +320,5 @@ for (const [id, title] of Object.entries(MENU))
 browser.contextMenus.onClicked.addListener((info, tab) =>
   browser.tabs.sendMessage(tab.id, { type: "teach", y: info.menuItemId === "sieve-hide" ? 1 : 0 }));
 
-// No popup on the browser action, so clicking it fires this. about:addons ->
-// Preferences is too many steps for something you check while labelling.
+// No popup on the browser action, so clicking it fires this.
 browser.browserAction.onClicked.addListener(() => browser.runtime.openOptionsPage());

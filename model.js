@@ -1,9 +1,9 @@
 // Logistic regression over [img | txt | img*txt] in shared CLIP space.
-// No browser APIs in this file on purpose: it runs under `node --test`.
+// No browser APIs here: this file runs under `node --test`.
 
 export const K = 512;          // CLIP ViT-B/32 projection width
 export const D = 3 * K;
-const XS = Math.sqrt(K);       // see feats()
+const XS = Math.sqrt(K);
 
 export const ZERO = new Float32Array(K);
 
@@ -19,10 +19,10 @@ export function feats(img, txt) {
   for (let i = 0; i < K; i++) {
     f[i] = img[i];
     f[K + i] = txt[i];
-    // The interaction block is what lets the model flag a post whose image and
-    // text are each individually fine. Both inputs are unit vectors, so the
-    // elementwise product has ~1/sqrt(K) the norm of either marginal block --
-    // without XS its gradient is ~22x smaller and it never gets a say.
+    // Interaction term: the only block that can express "this image *with* this
+    // text". Both inputs are unit vectors, so their product has ~1/sqrt(K) the
+    // norm of either marginal; without XS its gradient is ~22x smaller and it
+    // never gets a vote.
     f[2 * K + i] = img[i] * txt[i] * XS;
   }
   return f;
@@ -48,9 +48,8 @@ export class Model {
     return z;
   }
 
-  // Pass ZERO for a missing modality: that block and the interaction both drop
-  // out, and the model degrades to plain text-only (or image-only) logistic
-  // regression rather than scoring against garbage.
+  // ZERO for a missing modality drops that block and the interaction, degrading
+  // to text-only (or image-only) rather than scoring against garbage.
   score(img, txt) {
     return 1 / (1 + Math.exp(-this.#z(feats(img, txt))));
   }
@@ -66,10 +65,7 @@ export class Model {
 
 export const MIN_PER_CLASS = 3;
 
-// A post you scrolled past without hiding is weak evidence that it's fine --
-// real signal, but nothing like the strength of saying so. Keeping it low-weight
-// means hundreds of them inform the model without ever outvoting a click, and
-// it's why you only have to mark the *bad* ones by hand.
+// Weight of an implicit "scrolled past without hiding" label, vs 1 for a click.
 export const SEEN_WEIGHT = 0.15;
 
 export const counts = labels => {
@@ -81,38 +77,31 @@ export const counts = labels => {
   return { pos, neg, taught };
 };
 
-// Trained on one class only, this model is not merely inaccurate, it's
-// degenerate: every gradient step pushes the bias the same way and nothing
-// pushes back, so it saturates and scores everything ~1.00. Refuse to filter
-// until both classes exist rather than hiding the entire page.
+// One-class training is degenerate, not just inaccurate: nothing counteracts the
+// bias, so it saturates and scores everything ~1.00. Callers must not filter
+// until this passes.
 export const usable = labels => {
   const { pos, neg } = counts(labels);
   return pos >= MIN_PER_CLASS && neg >= MIN_PER_CLASS;
 };
 
-// Refit from scratch over the whole label log. Online learn() drifts toward
-// whatever you clicked most recently; this doesn't, and it's cheap enough
-// (1537 params) to just re-run whenever labels change.
-// These three numbers are load-bearing and were tuned against the threshold, not
-// against accuracy. Raising decay to 1e-3 keeps ranking perfect (0.83 vs 0.17
-// class means) while squashing every score toward 0.5, so almost nothing clears
-// the 0.85 threshold and the filter silently does nothing. Annealing the rate
-// does the same. There's a test pinning calibration; if you change these, watch
-// it rather than the accuracy number.
+// Refit from scratch; online learn() alone drifts toward whatever was clicked
+// most recently.
 //
-// epochs is part of that calibration, not just a convergence knob: at 30 the
-// ranking is already perfect but only 3% of true hides clear 0.85, so the filter
-// does nothing. At 200 it's 100% with no false positives.
+// epochs/lr/decay are tuned against the 0.85 threshold, not against accuracy.
+// decay=1e-3, or an annealed rate, or epochs=30 all keep ranking perfect while
+// squashing scores toward 0.5 so nothing crosses the threshold and the filter
+// silently does nothing. The "scores actually clear the default threshold" test
+// pins this; watch that rather than accuracy if you change them.
 //
-// ponytail: cost is O(labels * epochs) per click -- ~340ms at 320 labels, ~1s at
-// 1000. Warm-start from the current weights if that ever gets annoying.
+// ponytail: O(labels * epochs) per click, ~340ms at 320 labels, ~1s at 1000.
+// Warm-start from the current weights if that gets annoying.
 export function fit(labels, { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
-  // Balanced class weights, computed over sample weight rather than count so
-  // low-weight "seen" labels dilute correctly. A filter exists for rare things,
-  // so a handful of "hide" labels must not be drowned out by the pile of keeps --
-  // without this the model converges on never hiding anything.
+  // Class weights over sample weight, not count, so low-weight "seen" labels
+  // dilute correctly. Without this a few hides lose to the pile of keeps and the
+  // model converges on hiding nothing.
   let wpos = 0, wneg = 0;
   for (const l of labels) l.y ? (wpos += l.w ?? 1) : (wneg += l.w ?? 1);
   const total = wpos + wneg;
@@ -129,8 +118,7 @@ export function fit(labels, { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   return m;
 }
 
-// Leave-nothing-out is useless on 1537 params, so hold out a slice by hash of
-// position. Reported in the options page so you can see if it's actually working.
+// Every nth label held out, refit on the rest. Shown in the options page.
 export function holdout(labels, frac = 0.2, opts) {
   const test = labels.filter((_, i) => i % Math.round(1 / frac) === 0);
   const train = labels.filter((_, i) => i % Math.round(1 / frac) !== 0);
