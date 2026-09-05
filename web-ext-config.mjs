@@ -18,6 +18,24 @@ mkdirSync(profile, { recursive: true });
 export default {
   verbose: true,   // required: without it web-ext does not relay Firefox's stdout,
                    // so the console.stdout prefs below produce nothing
+
+  // Top level so `build` and `sign` can't drift apart. web-ext already drops
+  // node_modules, web-ext-artifacts, *.xpi and .git; these are the rest of the
+  // repo that has no business inside the packaged add-on. `npm run build` then
+  // `npm run manifest` prints what actually shipped.
+  ignoreFiles: [
+    "*.md",
+    "package.json",
+    "package-lock.json",
+    "test.js",
+    "vendor.mjs",
+    "release.mjs",
+    "web-ext-config.mjs",
+    "updates.json",
+    ".env",
+    ".gitignore",
+  ],
+
   run: {
     firefox: process.env.SIEVE_FIREFOX ?? "C:/Program Files (x86)/Mozilla Firefox/firefox.exe",
     firefoxProfile: profile,

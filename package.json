@@ -6,8 +6,9 @@
     "test": "node --test test.js",
     "vendor": "node vendor.mjs",
     "dev": "npm run vendor && web-ext run",
-    "sign": "npm run vendor && web-ext sign --channel=unlisted --id=sieve@example.com --ignore-files node_modules test.js vendor.mjs release.mjs web-ext-config.mjs package.json package-lock.json README.md updates.json",
-    "release": "node release.mjs"
+    "sign": "npm run vendor && web-ext sign --channel=unlisted --id=sieve@example.com",
+    "release": "node release.mjs",
+    "build": "npm run vendor && web-ext build --overwrite-dest"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0"
