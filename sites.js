@@ -27,6 +27,7 @@ const SITES = [
     block: true,
     text: p => p.querySelector(".teaser")?.innerText ?? "",
     image: p => p.querySelector("img.thumb")?.src ?? null,
+    link: p => p.querySelector("a[href*='/thread/']")?.href ?? null,
   },
   {
     // Board index and thread pages, both server-rendered.
@@ -35,12 +36,18 @@ const SITES = [
     mount: p => p.querySelector(".post"),
     text: p => p.querySelector(".postMessage")?.innerText ?? "",
     image: p => p.querySelector(".fileThumb img")?.src ?? null,
+    link: p => p.querySelector("a[href*='/thread/']")?.href ?? null,
   },
   {
     host: "old.reddit.com",
     post: ".thing",
     mount: p => p.querySelector(".entry"),
+    // Reddit's entry column is wide, so floating right puts the badge miles from
+    // the post it belongs to.
+    side: "left",
     text: p => [".title", ".md"].map(s => p.querySelector(s)?.innerText ?? "").join("\n").trim(),
     image: p => p.querySelector(".thumbnail img")?.src ?? null,
+    link: p => (p.dataset.permalink ? location.origin + p.dataset.permalink : null)
+      ?? p.querySelector("a.comments")?.href ?? null,
   },
 ];

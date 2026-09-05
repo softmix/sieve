@@ -185,11 +185,11 @@ function reindex() {
 }
 
 // keyOf() builds `${url}\n${text}` and the text may itself contain newlines, so
-// split once. Lets the options page show a post preview without storing the url
-// and text a second time alongside the embeddings.
+// split once, yielding the image url. The post's own link is stored separately
+// as `url` -- don't conflate them, spreading this over a label used to clobber it.
 const splitKey = key => {
   const i = key.indexOf("\n");
-  return { url: key.slice(0, i), text: key.slice(i + 1) };
+  return { img: key.slice(0, i), text: key.slice(i + 1) };
 };
 
 // Bounded, because these accrue on their own: every scored post adds one, so a
@@ -198,7 +198,7 @@ const splitKey = key => {
 let seenMax = 300;
 let threshold = 0.85;
 
-function noteSeen(e, key) {
+function noteSeen(e, key, url) {
   if (taught.has(key) || seenKeys.has(key)) return;
   const seen = labels.filter(l => l.src === "seen");
   if (seen.length >= seenMax) {
@@ -207,7 +207,7 @@ function noteSeen(e, key) {
     const drop = new Set(seen.slice(0, seen.length - seenMax + 1));
     labels = labels.filter(l => !drop.has(l));
   }
-  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, ts: Date.now() });
+  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, url, ts: Date.now() });
   seenKeys.add(key);
   soon();
 }
@@ -266,7 +266,7 @@ browser.runtime.onMessage.addListener(async msg => {
           // Only posts the model left alone. If it flagged one and you didn't
           // correct it, that's agreement -- recording a contradicting "fine"
           // would train against the very thing you asked it to catch.
-          if (p <= threshold) noteSeen(e, keyOf(msg.items[i].text, msg.items[i].img));
+          if (p <= threshold) noteSeen(e, keyOf(msg.items[i].text, msg.items[i].img), msg.items[i].url);
           // ready=false means the score isn't meaningful yet and nothing should
           // be hidden on the strength of it. See usable() in model.js.
           out[i] = { p, ready: usable(labels) };
@@ -286,7 +286,7 @@ browser.runtime.onMessage.addListener(async msg => {
       // Replaces, not stacks -- including any weak "seen" entry for this post,
       // which a click supersedes outright.
       labels = labels.filter(l => l.key !== key);
-      labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, ts: Date.now() });
+      labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, url: msg.url, ts: Date.now() });
       reindex();
       await commit();
       const c = counts(labels);
@@ -305,7 +305,7 @@ browser.runtime.onMessage.addListener(async msg => {
     case "closeCalls": {
       return labels
         .filter(l => l.src === "seen")
-        .map(l => ({ key: l.key, p: model.score(l.img, l.txt) }))
+        .map(l => ({ key: l.key, url: l.url, p: model.score(l.img, l.txt) }))
         .sort((a, b) => Math.abs(a.p - 0.5) - Math.abs(b.p - 0.5))
         .slice(0, msg.n ?? 12)
         .map(s => ({ ...s, ...splitKey(s.key) }));
@@ -325,7 +325,7 @@ browser.runtime.onMessage.addListener(async msg => {
       // Everything needed to rebuild the model elsewhere, weights and origin
       // included -- not just the embeddings.
       return labels.map(l => ({
-        img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, ts: l.ts,
+        img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, url: l.url, ts: l.ts,
       }));
 
     // Restoring a backup, or carrying labels from the dev profile into your real

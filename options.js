@@ -63,18 +63,28 @@ async function calls() {
     const li = document.createElement("li");
 
     const img = document.createElement("img");
-    if (c.url) img.src = c.url;
+    // c.img is the thumbnail, c.url the post it came from. Labels made before
+    // url was stored have none, so fall back to opening the image.
+    if (c.img) img.src = c.img;
     img.alt = "";
+    img.loading = "lazy";
 
     const txt = document.createElement("div");
     txt.className = "txt";
     txt.textContent = c.text || "(no text)";
 
+    const a = document.createElement("a");
+    a.className = "post";
+    a.href = c.url || c.img || "#";
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.append(img, txt);
+
     const num = document.createElement("span");
     num.className = "num";
     num.textContent = c.p.toFixed(2);
 
-    li.append(img, txt, num);
+    li.append(a, num);
     for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
       const b = document.createElement("button");
       b.textContent = glyph;

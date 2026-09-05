@@ -9,6 +9,19 @@
   font: 11px/1.4 monospace;
   color: inherit;
   opacity: 0.45;
+  /* Above whatever the site or another extension puts over the post -- in the
+     catalog the whole preview is a link, and clicks were landing on that. */
+  position: relative;
+  z-index: 2147483647;
+  isolation: isolate;
+}
+
+/* Reddit's entry column is wide; floated right the badge ends up nowhere near
+   the post it describes. */
+.sieve-tag[data-side="left"] {
+  float: left;
+  margin-left: 0;
+  margin-right: 6px;
 }
 
 /* Sites whose posts have no header row to sit beside: floated, the badge lands

@@ -80,23 +80,39 @@ async function run() {
     el = document.createElement("span");
     el.className = "sieve-tag";
     if (site.block) el.dataset.block = "";
+    if (site.side) el.dataset.side = site.side;
     el.innerHTML = '<span class="sieve-p"></span>';
 
     // Peek. Without this the only way to see a hidden post is ✓, which asserts
     // "this is fine" -- you'd have to label a post before you could look at it,
     // and peeking at correctly-hidden posts would poison the label set.
-    el.querySelector(".sieve-p").onclick = e => {
+    // Same treatment as the buttons below: pointerdown wins the race against the
+    // wrapping <a> and other extensions' handlers.
+    const p = el.querySelector(".sieve-p");
+    p.addEventListener("pointerdown", e => {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       set(post, { peek: !state.get(post)?.peek });
-    };
+    }, true);
+    for (const ev of ["mousedown", "mouseup", "click", "auxclick"]) {
+      p.addEventListener(ev, e => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+    }
     for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
       const b = document.createElement("button");
       b.textContent = glyph;
       b.title = title;
-      // Posts are usually inside links on catalog pages; without this, marking
-      // one navigates away.
-      b.onclick = e => { e.preventDefault(); e.stopPropagation(); teach(post, y); };
+      // Catalog thread previews are wrapped in an <a>, and other extensions bind
+      // their own handlers, so a plain onclick loses the race and navigates
+      // instead. Act on pointerdown -- the earliest event there is -- and swallow
+      // every later one in the sequence so nothing downstream ever sees a click.
+      b.addEventListener("pointerdown", e => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        teach(post, y);
+      }, true);
+      for (const ev of ["mousedown", "mouseup", "click", "auxclick"]) {
+        b.addEventListener(ev, e => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+      }
       el.append(b);
     }
     into.prepend(el);
@@ -132,7 +148,7 @@ async function run() {
     // is routine during development. Leave the posts alone rather than throwing.
     const res = await browser.runtime.sendMessage({
       type: "score",
-      items: posts.map(p => ({ text: site.text(p), img: site.image(p) })),
+      items: posts.map(p => ({ text: site.text(p), img: site.image(p), url: site.link?.(p) ?? null })),
     }).catch(() => null);
     if (!res) return;
 
@@ -151,6 +167,9 @@ async function run() {
 
     const res = await browser.runtime.sendMessage({
       type: "label", y, text: site.text(post), img: site.image(post),
+      // Stored so the options page can link back to the post. The image URL
+      // alone opens a picture with no context.
+      url: site.link?.(post) ?? null,
     }).catch(() => null);
     if (!res) return;
 
