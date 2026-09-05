@@ -1,0 +1,10 @@
+.sieve-hidden > *:not(.sieve-bar) { display: none !important; }
+
+.sieve-bar {
+  font: 12px/1.6 monospace;
+  opacity: 0.55;
+  cursor: pointer;
+  padding: 1px 5px;
+}
+
+.sieve-bar:hover { opacity: 1; text-decoration: underline; }

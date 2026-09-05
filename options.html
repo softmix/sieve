@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>sieve</title>
+<style>
+  body { font: 14px/1.7 monospace; max-width: 40em; margin: 2em auto; padding: 0 1em; }
+  label { display: block; margin: 1.5em 0 .3em; }
+  input[type=range] { width: 100%; }
+  button { font: inherit; margin-right: .5em; }
+  #stats { white-space: pre-wrap; opacity: .75; }
+  .warn { color: #b00; }
+</style>
+
+<h1>sieve</h1>
+
+<label>hide above <output id="tv"></output></label>
+<input type="range" id="threshold" min="0.5" max="0.99" step="0.01">
+<p id="stats">…</p>
+
+<button id="export">export labels</button>
+<button id="reset" class="warn">forget everything</button>
+
+<p><small>Every post carries its score in <code>data-sieve</code> — inspect a few
+to pick a threshold. Right-click a post to teach it; click a hidden bar to
+un-teach.</small></p>
+
+<script src="options.js"></script>

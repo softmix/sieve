@@ -1,0 +1,18 @@
+{
+  "name": "sieve",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test.js",
+    "vendor": "node vendor.mjs",
+    "dev": "npm run vendor && web-ext run --firefox=\"C:/Program Files (x86)/Mozilla Firefox/firefox.exe\" --args=--no-remote --pref=devtools.console.stdout.chrome=true --pref=devtools.console.stdout.content=true",
+    "sign": "npm run vendor && web-ext sign --channel=unlisted --id=sieve@example.com --ignore-files node_modules test.js vendor.mjs release.mjs package.json package-lock.json README.md updates.json .ffprofile",
+    "release": "node release.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "web-ext": "^10.6.0"
+  }
+}
