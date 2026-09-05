@@ -77,7 +77,7 @@ const toF32 = v => v instanceof Float32Array ? v
 
 let model = new Model();
 let labels = [];
-let scored = 0;
+let scored = 0, spent = 0;
 
 const booted = (async () => {
   const s = await browser.storage.local.get({ labels: [] });
@@ -90,8 +90,11 @@ browser.runtime.onMessage.addListener(async msg => {
   await booted;
   switch (msg.type) {
     case "score": {
+      const t = performance.now();
       const e = await embed(msg.text, msg.img);
-      if (++scored % 50 === 1) console.log(`sieve: scored ${scored} posts`);
+      spent += performance.now() - t;
+      // Inference is serialised, so this average is also the throughput ceiling.
+      if (++scored % 25 === 1) console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms avg`);
       return { p: model.score(e.img, e.txt) };
     }
     case "label": {
