@@ -345,3 +345,7 @@ for (const [id, title] of Object.entries(MENU))
 
 browser.contextMenus.onClicked.addListener((info, tab) =>
   browser.tabs.sendMessage(tab.id, { type: "teach", y: info.menuItemId === "sieve-hide" ? 1 : 0 }));
+
+// No popup on the browser action, so clicking it fires this. about:addons ->
+// Preferences is too many steps for something you check while labelling.
+browser.browserAction.onClicked.addListener(() => browser.runtime.openOptionsPage());

@@ -133,6 +133,9 @@ if classification turns out to need the detail.
 
 ## Options page
 
+Click the sieve button in the toolbar to open it (about:addons → Preferences also
+works, but is more clicks than you want while labelling).
+
 Status (including which backend actually loaded), the hide threshold, how many
 seen-posts to keep, export, reset — and **close calls**.
 

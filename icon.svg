@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Mid grey rather than context-fill: it reads on both light and dark
+       toolbars, and a mis-themed icon here would just be invisible. -->
+  <path fill="#8b8b8b" d="M1.5 2.5h13l-5 6v5l-3 1.5v-6.5z"/>
+</svg>

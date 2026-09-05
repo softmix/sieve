@@ -28,6 +28,14 @@
     "page": "options.html",
     "open_in_tab": true
   },
+  "icons": {
+    "16": "icon.svg",
+    "48": "icon.svg"
+  },
+  "browser_action": {
+    "default_icon": "icon.svg",
+    "default_title": "sieve — settings and close calls"
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "sieve@example.com",
