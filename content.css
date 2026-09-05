@@ -1,10 +1,35 @@
-.sieve-hidden > *:not(.sieve-bar) { display: none !important; }
+/* The badge stays visible on a collapsed post -- it's the only way back. */
+.sieve-hidden > *:not(.sieve-tag) { display: none !important; }
 
-.sieve-bar {
-  font: 12px/1.6 monospace;
-  opacity: 0.55;
-  cursor: pointer;
-  padding: 1px 5px;
+.sieve-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+  font: 11px/1.4 monospace;
+  color: inherit;
+  opacity: 0.45;
 }
 
-.sieve-bar:hover { opacity: 1; text-decoration: underline; }
+.sieve-tag:hover { opacity: 1; }
+
+.sieve-tag button {
+  font: inherit;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.6;
+}
+
+.sieve-tag button:hover { opacity: 1; }
+
+/* Marked posts stay legible without hovering -- during the initial fill you want
+   to see at a glance which ones you've already done. */
+.sieve-tag[data-mark] { opacity: 1; }
+.sieve-tag[data-mark="hide"] { color: #c0392b; }
+.sieve-tag[data-mark="keep"] { color: #27803d; }

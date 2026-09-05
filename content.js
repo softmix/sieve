@@ -1,13 +1,13 @@
 /* global SITES */
-const site = SITES[location.hostname];
+const site = SITES.find(s =>
+  s.host === location.hostname && (!s.path || s.path.test(location.pathname)));
 if (site) run();
 
 async function run() {
   let { threshold } = await browser.storage.local.get({ threshold: 0.85 });
   browser.storage.onChanged.addListener(c => c.threshold && (threshold = c.threshold.newValue));
 
-  // Right-clicking is the whole teaching UI, in both directions. Cheaper and far
-  // less fragile than injecting buttons into every post on every site.
+  // Right-click still works anywhere in a post; the buttons are for bulk work.
   let target = null;
   addEventListener("contextmenu", e => (target = e.target.closest?.(site.post)), true);
   browser.runtime.onMessage.addListener(msg => {
@@ -23,10 +23,55 @@ async function run() {
   const seen = new WeakSet();
   const scan = () => {
     for (const p of document.querySelectorAll(site.post))
-      if (!seen.has(p)) { seen.add(p); io.observe(p); }
+      if (!seen.has(p)) {
+        seen.add(p);
+        set(p, {});     // draw the badge immediately so "not scored yet" is visible
+        io.observe(p);
+      }
   };
-  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
-  scan();
+
+  // ---- badge -------------------------------------------------------------
+
+  const state = new WeakMap();
+
+  function badge(post) {
+    let el = post.querySelector(":scope > .sieve-tag");
+    if (el) return el;
+
+    el = document.createElement("span");
+    el.className = "sieve-tag";
+    el.innerHTML = '<span class="sieve-p"></span>';
+    for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
+      const b = document.createElement("button");
+      b.textContent = glyph;
+      b.title = title;
+      // Posts are usually inside links on catalog pages; without this, marking
+      // one navigates away.
+      b.onclick = e => { e.preventDefault(); e.stopPropagation(); teach(post, y); };
+      el.append(b);
+    }
+    post.prepend(el);
+    return el;
+  }
+
+  function set(post, patch) {
+    const s = Object.assign(state.get(post) ?? {}, patch);
+    state.set(post, s);
+
+    const el = badge(post);
+    // Must be absent, not empty -- the stylesheet keys off [data-mark] existing.
+    if (s.mark) el.dataset.mark = s.mark; else delete el.dataset.mark;
+    el.querySelector(".sieve-p").textContent =
+      s.mark === "hide" ? "hidden" :
+      s.mark === "keep" ? "kept" :
+      s.p == null ? "…" : s.p.toFixed(2);   // … means not scored yet
+    if (s.tally) el.title = s.tally;
+    if (s.p != null) post.dataset.sieve = s.p.toFixed(2);
+
+    post.classList.toggle("sieve-hidden", s.mark === "hide" || (s.mark !== "keep" && !!s.auto));
+  }
+
+  // ---- scoring and teaching ----------------------------------------------
 
   async function classify(post) {
     // web-ext reloads the background page on every source edit while content
@@ -37,49 +82,29 @@ async function run() {
       type: "score", text: site.text(post), img: site.image(post),
     }).catch(() => null);
     if (!res) return;
-    post.dataset.sieve = res.p.toFixed(2);   // every post carries its score, for tuning the threshold
-    // Until both classes have a few labels the score means nothing, so record it
-    // for tuning but don't act on it. res.exact bypasses that: you marked this
-    // exact post, so it hides regardless of what the model currently thinks.
-    if (res.exact) { if (res.p) collapse(post, 1, true); return; }
-    if (res.ready && res.p > threshold) collapse(post, res.p);
-  }
 
-  const bar = (post, text) => {
-    post.querySelector(":scope > .sieve-bar")?.remove();
-    const el = document.createElement("div");
-    el.className = "sieve-bar";
-    el.textContent = text;
-    post.prepend(el);
-    return el;
-  };
-
-  function collapse(post, p, exact) {
-    if (post.classList.contains("sieve-hidden")) return;
-    const label = exact ? "hidden — you marked this one" : `hidden ${p.toFixed(2)} — click if this is fine`;
-    bar(post, label).onclick = () => teach(post, 0);
-    post.classList.add("sieve-hidden");
+    // exact: you marked this precise post, so it's a stored fact and warmup
+    // doesn't apply. Otherwise the score only acts once both classes exist.
+    if (res.exact) return set(post, { p: res.p, mark: res.p ? "hide" : "keep" });
+    set(post, { p: res.p, auto: res.ready && res.p > threshold });
   }
 
   async function teach(post, y) {
+    set(post, { mark: y ? "hide" : "keep" });   // optimistic, so bulk clicking feels instant
+
     const res = await browser.runtime.sendMessage({
       type: "label", y, text: site.text(post), img: site.image(post),
     }).catch(() => null);
     if (!res) return;
 
-    // Feedback matters here: marking a visible post "fine" otherwise looks like
-    // nothing happened, and the tally is what tells you how far you still are
-    // from the point where filtering switches on.
-    const tally = `${res.pos} hide / ${res.neg} keep`
-      + (res.ready ? "" : `, filtering starts at ${res.need} of each`);
-
-    if (y) {
-      post.classList.add("sieve-hidden");
-      bar(post, `hidden — ${tally}`).onclick = () => teach(post, 0);
-      return;
-    }
-    post.classList.remove("sieve-hidden");
-    const el = bar(post, `marked fine — ${tally}`);
-    setTimeout(() => el.remove(), 3000);
+    set(post, {
+      tally: `${res.pos} hide / ${res.neg} keep`
+        + (res.ready ? "" : ` — filtering starts at ${res.need} of each`),
+    });
   }
+
+  // Last: scan() reaches set() and the badge helpers, which are `const` and so
+  // are still in the temporal dead zone anywhere above this line.
+  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+  scan();
 }
