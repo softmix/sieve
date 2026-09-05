@@ -79,30 +79,16 @@ async function run() {
 
     // Peek: reveals without labelling. ✓ asserts "this is fine", so using it to
     // look at a hidden post would poison the label set.
-    const p = el.querySelector(".sieve-p");
-    p.addEventListener("pointerdown", e => {
+    el.querySelector(".sieve-p").onclick = e => {
       e.preventDefault();
-      e.stopImmediatePropagation();
+      e.stopPropagation();
       set(post, { peek: !state.get(post)?.peek });
-    }, true);
-    for (const ev of ["mousedown", "mouseup", "click", "auxclick"]) {
-      p.addEventListener(ev, e => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
-    }
+    };
     for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
       const b = document.createElement("button");
       b.textContent = glyph;
       b.title = title;
-      // Catalog previews are wrapped in an <a> and other extensions bind their
-      // own handlers, so a plain onclick loses the race and navigates instead.
-      // Act on pointerdown and swallow every later event in the sequence.
-      b.addEventListener("pointerdown", e => {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        teach(post, y);
-      }, true);
-      for (const ev of ["mousedown", "mouseup", "click", "auxclick"]) {
-        b.addEventListener(ev, e => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
-      }
+      b.onclick = e => { e.preventDefault(); e.stopPropagation(); teach(post, y); };
       el.append(b);
     }
     into.prepend(el);

@@ -16,11 +16,11 @@ download from Hugging Face.
 
 ## Use
 
-Right-click a post → "sieve: hide posts like this" or "sieve: this post is
-fine". That's the whole interface. Posts scoring above the threshold collapse to
-a one-line bar; clicking the bar marks it fine and expands it. Every post carries
-its score in `data-sieve`, so inspect a few to pick a threshold in the options
-page.
+Each post carries a badge: its score, or `…` if it hasn't been scored yet, plus
+✓ / ✗ buttons. Right-clicking a post does the same via the context menu. Posts
+scoring above the threshold collapse, leaving the badge, and the score becomes a
+`▸` toggle that peeks at the post *without* labelling it — ✓ and ✗ are the only
+things that write a label. The score is also on every post in `data-sieve`.
 
 **You mostly only have to mark the bad ones.** Any post the model leaves alone
 and you don't hide is recorded as a weak negative at `SEEN_WEIGHT` (0.15) — real
@@ -40,11 +40,6 @@ Seen-labels satisfy the negative side, so in practice you need 3 hides.
 
 Fitting is class-balanced over sample *weight*, so a handful of hides isn't
 drowned out by the pile of keeps, and the weak ones dilute correctly.
-
-Each post carries a badge: the score, or `…` if it hasn't been scored yet, plus
-✓ / ✗ buttons for bulk labelling. On a hidden post the score becomes a `▸` peek
-toggle — clicking it reveals the post *without* labelling it, so you can check a
-hide before deciding. ✓ and ✗ are the only things that write a label.
 
 The first page load downloads CLIP into the browser cache — ~80 MB at the fp16
 WebGPU default, ~40 MB if it falls back to wasm/q8. After that it's local;
