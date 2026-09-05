@@ -3,8 +3,8 @@
     "sieve@example.com": {
       "updates": [
         {
-          "version": "0.1.0",
-          "update_link": "https://github.com/softmix/sieve/releases/download/0.1.0/sieve.xpi"
+          "version": "0.2.0",
+          "update_link": "https://github.com/softmix/sieve/releases/download/0.2.0/sieve.xpi"
         }
       ]
     }
