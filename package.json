@@ -6,9 +6,10 @@
     "test": "node --test test.js",
     "vendor": "node vendor.mjs",
     "dev": "npm run vendor && web-ext run",
-    "sign": "npm run vendor && web-ext sign --channel=unlisted",
+    "sign": "npm run clean && npm run vendor && web-ext sign --channel=unlisted",
     "release": "node release.mjs",
-    "build": "npm run vendor && web-ext build --overwrite-dest"
+    "build": "npm run clean && npm run vendor && web-ext build",
+    "clean": "node -e \"require('fs').rmSync('web-ext-artifacts',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0"

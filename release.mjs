@@ -15,8 +15,11 @@ const id = bss.gecko.id;
 if (sh("git", ["status", "--porcelain"])) throw new Error("git state not clean");
 if (!sh("git", ["remote"])) throw new Error("no git remote -- create the GitHub repo first");
 
-const xpi = readdirSync("web-ext-artifacts").find(f => f.endsWith(".xpi"));
-if (!xpi) throw new Error("no signed xpi -- run `source .env && npm run sign` first");
+// Matched on version, not just "first .xpi in the directory" -- signing leaves
+// previous versions behind, and picking one of those would ship the wrong build
+// under the right tag.
+const xpi = readdirSync("web-ext-artifacts").find(f => f.endsWith(`-${version}.xpi`));
+if (!xpi) throw new Error(`no signed xpi for ${version} -- run \`source .env && npm run sign\` first`);
 
 // Firefox fetches updates.json from raw.githubusercontent at the URL baked into
 // the manifest, so it has to be committed and pushed, not merely written. Both
