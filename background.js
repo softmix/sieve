@@ -65,7 +65,15 @@ async function embedImage(src) {
 // dozen overlapping inferences and they fight over the same session.
 let tail = Promise.resolve();
 const embed = (text, img) => {
-  const run = tail.then(async () => ({ txt: await embedText(text), img: await embedImage(img) }));
+  const run = tail.then(async () => {
+    // Timed in here, not at the call site: a catalog page makes ~200 posts
+    // visible at once and they all queue behind this lock, so measuring from the
+    // caller reports mostly other posts' work.
+    const t = performance.now();
+    const out = { txt: await embedText(text), img: await embedImage(img) };
+    out.ms = performance.now() - t;
+    return out;
+  });
   tail = run.catch(() => {});
   return run;
 };
@@ -77,7 +85,7 @@ const toF32 = v => v instanceof Float32Array ? v
 
 let model = new Model();
 let labels = [];
-let scored = 0, spent = 0;
+let scored = 0, spent = 0, queued = 0;
 
 // Exact recall, in front of the model. A post you explicitly marked is a stored
 // fact, not a prediction -- it must stay hidden on reload even while the model
@@ -105,9 +113,13 @@ browser.runtime.onMessage.addListener(async msg => {
 
       const t = performance.now();
       const e = await embed(msg.text, msg.img);
-      spent += performance.now() - t;
-      // Inference is serialised, so this average is also the throughput ceiling.
-      if (++scored % 25 === 1) console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms avg`);
+      spent += e.ms;
+      queued += performance.now() - t - e.ms;
+      // Chatty for the first few: call 1 carries ONNX session warmup and is
+      // wildly unrepresentative of steady state.
+      if (++scored <= 5 || scored % 25 === 0)
+        console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms compute avg,`
+          + ` ${(queued / scored) | 0}ms queued avg (this one ${e.ms | 0}ms)`);
       // ready=false means the score is not yet meaningful and nothing should be
       // hidden on the strength of it. See usable() in model.js.
       return { p: model.score(e.img, e.txt), ready: usable(labels) };

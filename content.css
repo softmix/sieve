@@ -14,6 +14,10 @@
 
 .sieve-tag:hover { opacity: 1; }
 
+/* The score doubles as the peek toggle on a hidden post. */
+.sieve-p { cursor: pointer; }
+.sieve-p:hover { text-decoration: underline; }
+
 .sieve-tag button {
   font: inherit;
   line-height: 1;

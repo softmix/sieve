@@ -5,9 +5,8 @@
   "scripts": {
     "test": "node --test test.js",
     "vendor": "node vendor.mjs",
-    "predev": "node profile.mjs",
-    "dev": "npm run vendor && web-ext run --firefox=\"C:/Program Files (x86)/Mozilla Firefox/firefox.exe\" --firefox-profile=./.ffprofile --profile-create-if-missing --keep-profile-changes --args=--no-remote --pref=devtools.console.stdout.chrome=true --pref=devtools.console.stdout.content=true",
-    "sign": "npm run vendor && web-ext sign --channel=unlisted --id=sieve@example.com --ignore-files node_modules test.js vendor.mjs release.mjs package.json package-lock.json README.md updates.json .ffprofile",
+    "dev": "npm run vendor && web-ext run",
+    "sign": "npm run vendor && web-ext sign --channel=unlisted --id=sieve@example.com --ignore-files node_modules test.js vendor.mjs release.mjs web-ext-config.mjs package.json package-lock.json README.md updates.json",
     "release": "node release.mjs"
   },
   "dependencies": {

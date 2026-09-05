@@ -41,6 +41,15 @@ async function run() {
     el = document.createElement("span");
     el.className = "sieve-tag";
     el.innerHTML = '<span class="sieve-p"></span>';
+
+    // Peek. Without this the only way to see a hidden post is ✓, which asserts
+    // "this is fine" -- you'd have to label a post before you could look at it,
+    // and peeking at correctly-hidden posts would poison the label set.
+    el.querySelector(".sieve-p").onclick = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      set(post, { peek: !state.get(post)?.peek });
+    };
     for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
       const b = document.createElement("button");
       b.textContent = glyph;
@@ -58,17 +67,18 @@ async function run() {
     const s = Object.assign(state.get(post) ?? {}, patch);
     state.set(post, s);
 
+    const hide = s.mark === "hide" || (s.mark !== "keep" && !!s.auto);
     const el = badge(post);
     // Must be absent, not empty -- the stylesheet keys off [data-mark] existing.
     if (s.mark) el.dataset.mark = s.mark; else delete el.dataset.mark;
     el.querySelector(".sieve-p").textContent =
-      s.mark === "hide" ? "hidden" :
+      hide ? `hidden ${s.peek ? "▾" : "▸"}` :   // click to peek, without labelling it
       s.mark === "keep" ? "kept" :
-      s.p == null ? "…" : s.p.toFixed(2);   // … means not scored yet
+      s.p == null ? "…" : s.p.toFixed(2);       // … means not scored yet
     if (s.tally) el.title = s.tally;
     if (s.p != null) post.dataset.sieve = s.p.toFixed(2);
 
-    post.classList.toggle("sieve-hidden", s.mark === "hide" || (s.mark !== "keep" && !!s.auto));
+    post.classList.toggle("sieve-hidden", hide && !s.peek);
   }
 
   // ---- scoring and teaching ----------------------------------------------

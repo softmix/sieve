@@ -33,9 +33,21 @@ refuses to filter until both classes exist; the options page says so plainly.
 Labels are also class-balanced when fitting, so a handful of hides doesn't get
 drowned out once the keeps pile up.
 
+Each post carries a badge: the score, or `…` if it hasn't been scored yet, plus
+✓ / ✗ buttons for bulk labelling. On a hidden post the score becomes a `▸` peek
+toggle — clicking it reveals the post *without* labelling it, so you can check a
+hide before deciding. ✓ and ✗ are the only things that write a label.
+
 The first page load downloads ~40 MB of CLIP weights into the browser cache.
 After that it's local and cached; repeated images are cached by URL, which on an
 imageboard is most of them.
+
+Measured on a 4chan catalog: **~170–330 ms of compute per post** (WASM,
+single-threaded). Inference is serialised behind one ORT session, so on a catalog
+page — where ~200 posts become visible at once — the queue wait dominates at
+2–3 s and takes about a minute to drain. Thread and index pages don't have this
+problem. If it becomes annoying, the fix is to drop queued work for posts that
+have scrolled away rather than to make inference faster.
 
 ## Dev
 
