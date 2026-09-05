@@ -3,11 +3,14 @@ const send = msg => browser.runtime.sendMessage(msg);
 
 // ---- settings ------------------------------------------------------------
 
-browser.storage.local.get({ threshold: 0.85, seenMax: 300 }).then(s => {
+browser.storage.local.get({ threshold: 0.85, seenMax: 300, hiding: true }).then(s => {
   $("threshold").value = s.threshold;
   $("tv").value = s.threshold;
   $("seenMax").value = s.seenMax;
+  $("hiding").checked = s.hiding;
 });
+
+$("hiding").onchange = e => browser.storage.local.set({ hiding: e.target.checked });
 
 $("threshold").oninput = e => {
   $("tv").value = e.target.value;
@@ -97,6 +100,26 @@ $("export").onclick = async () => {
   // <a download> rather than browser.downloads, which would cost a permission
   // for something the DOM already does.
   Object.assign(document.createElement("a"), { href: url, download: "sieve-labels.json" }).click();
+};
+
+$("import").onclick = () => $("file").click();
+
+$("file").onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";                 // so picking the same file twice re-fires
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {
+    return void ($("io").textContent = "That file isn't valid JSON.");
+  }
+  const r = await send({ type: "import", labels: parsed });
+  $("io").textContent = r.added
+    ? `Imported ${r.added} labels${r.skipped ? `, skipped ${r.skipped} malformed` : ""}.`
+    : "Nothing importable in that file.";
+  stats();
+  calls();
 };
 
 $("reset").onclick = async () => {

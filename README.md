@@ -46,9 +46,9 @@ Each post carries a badge: the score, or `…` if it hasn't been scored yet, plu
 toggle — clicking it reveals the post *without* labelling it, so you can check a
 hide before deciding. ✓ and ✗ are the only things that write a label.
 
-The first page load downloads ~40 MB of CLIP weights into the browser cache.
-After that it's local and cached; repeated images are cached by URL, which on an
-imageboard is most of them.
+The first page load downloads CLIP into the browser cache — ~80 MB at the fp16
+WebGPU default, ~40 MB if it falls back to wasm/q8. After that it's local;
+repeated images are cached by URL, which on an imageboard is most of them.
 
 Every post gets scored, nearest-to-the-viewport first, re-evaluated after each
 one so it follows your scrolling. Skipping offscreen posts would be cheaper but
@@ -94,11 +94,19 @@ reload.
 - **Logging to the terminal needs `--pref=devtools.console.stdout.chrome=true`**
   (both prefs are already in the `dev` script). Without it you're stuck with the
   Browser Console GUI.
-- **Don't use `--keep-profile-changes`/`--firefox-profile`** unless the profile
-  was made by Firefox itself (`firefox -CreateProfile`). Pointed at an empty
-  directory, Firefox exits before initialising and you get the same refused
-  connection as the `--no-remote` failure, which is a confusing coincidence.
-  The cost of skipping it is re-downloading CLIP once per browser start.
+- **The dev profile lives at `~/.sieve-ffprofile`, outside this directory, and
+  must stay there.** web-ext watches the source tree to hot-reload; Firefox
+  writes to its profile constantly. A profile in here means an extension reload
+  every few seconds — which re-initialises CLIP and kills content scripts before
+  they can score anything, so the page just looks broken. `--watch-ignored` did
+  not reliably exclude it.
+- **`--firefox-profile` needs a path separator in it.** web-ext decides
+  path-vs-profile-name by looking for one, so `.ffprofile` becomes `-P .ffprofile`
+  (a name), Firefox opens the profile manager, and the debugger connection is
+  refused — exactly the same symptom as the `--no-remote` failure above, which
+  makes the two easy to confuse. All of this is settled in `web-ext-config.mjs`.
+  It matters because web-ext's default is a throwaway profile per run, which
+  silently wipes every label you've clicked.
 - **`transformers.web.min.js` is not standalone.** It imports
   `onnxruntime-common` and `onnxruntime-web/webgpu` as bare specifiers, expecting
   a bundler. An import map would fix that with no build step, except it has to be
@@ -116,9 +124,13 @@ reload.
   reproduce this deliberately — with near-orthogonal vectors every test here is
   easier than reality, and the one-class blow-up in particular measures 0.86
   instead of the 0.98 you actually get.
-- `fit()` anneals the learning rate. With a flat rate it hasn't converged by the
-  last epoch, and the order you happened to click labels in shifts scores by up
-  to 0.17 — enough to flip a post across the threshold.
+- **`fit()`'s epochs/lr/decay are tuned against the threshold, not against
+  accuracy**, and the difference is not academic. At `decay=1e-3`, or with an
+  annealed learning rate, or at 30 epochs instead of 200, the model still ranks
+  perfectly — class means 0.83 vs 0.17 — while squashing every score toward 0.5
+  so that almost nothing crosses 0.85 and the filter silently does nothing at
+  all. Accuracy tests cannot see this. There's a test that asserts against the
+  threshold instead; watch that one if you touch those numbers.
 
 ## Adding a site
 

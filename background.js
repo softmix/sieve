@@ -2,7 +2,7 @@ import {
   AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection,
   CLIPVisionModelWithProjection, RawImage, env,
 } from "./vendor/transformers.js";
-import { Model, ZERO, l2, fit, holdout, usable, counts, MIN_PER_CLASS, SEEN_WEIGHT } from "./model.js";
+import { Model, ZERO, K, l2, fit, holdout, usable, counts, MIN_PER_CLASS, SEEN_WEIGHT } from "./model.js";
 
 const MODEL = "Xenova/clip-vit-base-patch32";
 
@@ -327,6 +327,26 @@ browser.runtime.onMessage.addListener(async msg => {
       return labels.map(l => ({
         img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, ts: l.ts,
       }));
+
+    // Restoring a backup, or carrying labels from the dev profile into your real
+    // browser. Merges by key so importing twice is a no-op rather than a
+    // duplicate, and imported entries win.
+    case "import": {
+      const ok = l => l && (l.y === 0 || l.y === 1)
+        && l.img?.length === K && l.txt?.length === K;
+      const good = (Array.isArray(msg.labels) ? msg.labels : []).filter(ok);
+      if (!good.length) return { added: 0, skipped: msg.labels?.length ?? 0 };
+
+      const incoming = good.map(l => ({
+        ...l, img: toF32(l.img), txt: toF32(l.txt), w: l.w ?? 1, ts: l.ts ?? Date.now(),
+      }));
+      const keys = new Set(incoming.map(l => l.key).filter(Boolean));
+      labels = [...labels.filter(l => !l.key || !keys.has(l.key)), ...incoming];
+      reindex();
+      await commit();
+      console.log(`sieve: imported ${incoming.length}`);
+      return { added: incoming.length, skipped: (msg.labels?.length ?? 0) - incoming.length, ...counts(labels) };
+    }
 
     case "reset":
       labels = [];

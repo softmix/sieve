@@ -2,6 +2,10 @@
 // type -- only the scraping differs, and everything downstream sees the same
 // (text, imageUrl).
 //
+// `mount` picks the element the badge is injected into and that collapses when a
+// post is hidden -- point it at the site's own visually-boxed element, or the
+// badge ends up outside the post rather than inside it. Defaults to `post`.
+//
 // Matched in order, first hit wins, so put narrower `path` entries above the
 // catch-all for the same host. Adding a host also means adding it to
 // manifest.json's content_scripts.matches; nothing enforces that pairing, so if
@@ -18,6 +22,9 @@ const SITES = [
     host: "boards.4chan.org",
     path: /^\/[^/]+\/catalog/,
     post: ".thread",
+    // A thread preview has no header row to sit beside, and a floated badge ends
+    // up left of a narrow image rather than above it. Give it its own line.
+    block: true,
     text: p => p.querySelector(".teaser")?.innerText ?? "",
     image: p => p.querySelector("img.thumb")?.src ?? null,
   },
@@ -25,12 +32,14 @@ const SITES = [
     // Board index and thread pages, both server-rendered.
     host: "boards.4chan.org",
     post: ".postContainer",
+    mount: p => p.querySelector(".post"),
     text: p => p.querySelector(".postMessage")?.innerText ?? "",
     image: p => p.querySelector(".fileThumb img")?.src ?? null,
   },
   {
     host: "old.reddit.com",
     post: ".thing",
+    mount: p => p.querySelector(".entry"),
     text: p => [".title", ".md"].map(s => p.querySelector(s)?.innerText ?? "").join("\n").trim(),
     image: p => p.querySelector(".thumbnail img")?.src ?? null,
   },

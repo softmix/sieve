@@ -39,6 +39,12 @@
 <h2>settings</h2>
 
 <div class="row">
+  <label for="hiding">hide matching posts</label>
+  <input type="checkbox" id="hiding">
+  <span class="hint">off = still score and badge everything, just don't collapse it</span>
+</div>
+
+<div class="row">
   <label for="threshold">hide above</label>
   <input type="range" id="threshold" min="0.5" max="0.99" step="0.01">
   <output class="num" id="tv"></output>
@@ -61,6 +67,10 @@ more than labelling anything else.</p>
 
 <h2>data</h2>
 <button id="export">export labels</button>
+<button id="import">import labels</button>
+<input type="file" id="file" accept="application/json,.json" hidden>
 <button id="reset" class="warn">forget everything</button>
+<p class="hint" id="io">Import merges by post, so re-importing the same file changes
+nothing. This is how you carry labels from a dev profile into your real browser.</p>
 
 <script src="options.js"></script>

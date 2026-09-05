@@ -4,8 +4,14 @@ const site = SITES.find(s =>
 if (site) run();
 
 async function run() {
-  let { threshold } = await browser.storage.local.get({ threshold: 0.85 });
-  browser.storage.onChanged.addListener(c => c.threshold && (threshold = c.threshold.newValue));
+  // hiding=false still scores everything and shows the badges, it just doesn't
+  // collapse anything. That's the mode you want the first time you turn this
+  // loose on a real browsing session, and for tuning the threshold afterwards.
+  let { threshold, hiding } = await browser.storage.local.get({ threshold: 0.85, hiding: true });
+  browser.storage.onChanged.addListener(c => {
+    if (c.threshold) threshold = c.threshold.newValue;
+    if (c.hiding) hiding = c.hiding.newValue;
+  });
 
   // Right-click still works anywhere in a post; the buttons are for bulk work.
   let target = null;
@@ -61,12 +67,19 @@ async function run() {
 
   const state = new WeakMap();
 
+  // The element the badge lives in and that collapses when hidden. Sites box
+  // their posts in an inner element; mounting on the outer one puts the badge
+  // visually outside the post.
+  const host = post => site.mount?.(post) ?? post;
+
   function badge(post) {
-    let el = post.querySelector(":scope > .sieve-tag");
+    const into = host(post);
+    let el = into.querySelector(":scope > .sieve-tag");
     if (el) return el;
 
     el = document.createElement("span");
     el.className = "sieve-tag";
+    if (site.block) el.dataset.block = "";
     el.innerHTML = '<span class="sieve-p"></span>';
 
     // Peek. Without this the only way to see a hidden post is ✓, which asserts
@@ -86,7 +99,7 @@ async function run() {
       b.onclick = e => { e.preventDefault(); e.stopPropagation(); teach(post, y); };
       el.append(b);
     }
-    post.prepend(el);
+    into.prepend(el);
     return el;
   }
 
@@ -98,14 +111,17 @@ async function run() {
     const el = badge(post);
     // Must be absent, not empty -- the stylesheet keys off [data-mark] existing.
     if (s.mark) el.dataset.mark = s.mark; else delete el.dataset.mark;
+    // With hiding switched off, a would-be-hidden post reads as revealed rather
+    // than claiming to be hidden while plainly visible.
+    const shown = s.peek || !hiding;
     el.querySelector(".sieve-p").textContent =
-      hide ? `hidden ${s.peek ? "▾" : "▸"}` :   // click to peek, without labelling it
+      hide ? `hidden ${shown ? "▾" : "▸"}` :    // click to peek, without labelling it
       s.mark === "keep" ? "kept" :
       s.p == null ? "…" : s.p.toFixed(2);       // … means not scored yet
     if (s.tally) el.title = s.tally;
     if (s.p != null) post.dataset.sieve = s.p.toFixed(2);
 
-    post.classList.toggle("sieve-hidden", hide && !s.peek);
+    host(post).classList.toggle("sieve-hidden", hide && !shown);
   }
 
   // ---- scoring and teaching ----------------------------------------------
@@ -126,7 +142,7 @@ async function run() {
       // exact: you marked this precise post, so it's a stored fact and warmup
       // doesn't apply. Otherwise the score only acts once both classes exist.
       if (r.exact) return set(post, { p: r.p, mark: r.p ? "hide" : "keep" });
-      set(post, { p: r.p, auto: r.ready && r.p > threshold });
+      set(post, { p: r.p, auto: hiding && r.ready && r.p > threshold });
     });
   }
 

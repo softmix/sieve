@@ -1,15 +1,22 @@
-/* The badge stays visible on a collapsed post -- it's the only way back. */
-.sieve-hidden > *:not(.sieve-tag) { display: none !important; }
-
+/* Floated so it rides alongside the post's own header line instead of pushing
+   every post down by a row -- on a board index that's 78 posts of extra scroll. */
 .sieve-tag {
+  float: right;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  margin-right: 5px;
-  vertical-align: middle;
+  margin-left: 6px;
   font: 11px/1.4 monospace;
   color: inherit;
   opacity: 0.45;
+}
+
+/* Sites whose posts have no header row to sit beside: floated, the badge lands
+   to the left of a narrow image rather than above it. */
+.sieve-tag[data-block] {
+  float: none;
+  display: flex;
+  margin-left: 0;
 }
 
 .sieve-tag:hover { opacity: 1; }
@@ -37,3 +44,8 @@
 .sieve-tag[data-mark] { opacity: 1; }
 .sieve-tag[data-mark="hide"] { color: #c0392b; }
 .sieve-tag[data-mark="keep"] { color: #27803d; }
+
+/* Collapsed. The badge is the only thing left, so it has to hold the line by
+   itself -- a float would leave the container zero-height. */
+.sieve-hidden > *:not(.sieve-tag) { display: none !important; }
+.sieve-hidden > .sieve-tag { float: none; display: flex; }
