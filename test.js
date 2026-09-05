@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { K, Model, ZERO, l2, fit, holdout } from "./model.js";
+import { K, Model, ZERO, l2, fit, holdout, usable, counts } from "./model.js";
 
 // Synthetic stand-ins for CLIP embeddings. jit() nudges one toward a fresh
 // random direction so train and test never see the same vector -- anything that
@@ -12,7 +12,14 @@ const jit = (v, k, a = 0.3) => {
   return l2(Array.from(v, (x, i) => x + a * n[i]));
 };
 
-const [IA, IB, TA, TB] = [unit(1), unit(2), unit(3), unit(4)];
+// Real CLIP embeddings are anisotropic: they sit in a narrow cone, so two
+// completely unrelated images still have cosine ~0.8. Near-orthogonal test
+// vectors make every test here easier than reality -- and specifically hide the
+// one-class blow-up below, which measures 0.86 orthogonal but 0.98 in the cone.
+const CONE = unit(42);
+const emb = s => l2(Array.from(unit(s), (x, i) => x + 2 * CONE[i]));
+
+const [IA, IB, TA, TB] = [emb(1), emb(2), emb(3), emb(4)];
 
 // Two conjunctions that disagree: image A is only bad with text A, image B only
 // with text B, and the crossed pairings are fine. This is the real shape of
@@ -66,10 +73,40 @@ test("fit refits from the log and is order-independent", () => {
     for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });
 
   assert.ok(worstErr(fit(labels)) < 0.3);
-  // Same labels, shuffled input order -> same model, unlike raw online learning.
-  const a = fit(labels).toJSON().w;
-  const b = fit([...labels].reverse()).toJSON().w;
-  assert.ok(Math.abs(Math.hypot(...a) - Math.hypot(...b)) < 1e-3);
+
+  // Same labels in reverse order must hide the same posts. Not bit-identical
+  // weights -- the shuffle visits them differently, so they land ~0.02% apart in
+  // norm; what matters is that the order you happened to click in doesn't change
+  // the verdict, which is the thing raw online learning gets wrong.
+  const [a, b] = [fit(labels), fit([...labels].reverse())];
+  const drift = Math.max(...PAIRS.map(([i, t]) =>
+    Math.abs(a.score(jit(i, 7001), jit(t, 7992)) - b.score(jit(i, 7001), jit(t, 7992)))));
+  assert.ok(drift < 0.05, `label order shifted predictions by ${drift.toFixed(3)}`);
+});
+
+test("one-class labels are rejected instead of hiding everything", () => {
+  // The bug this guards: hide two posts, reload, and every post on the page is
+  // gone at 1.00. Nothing counteracts the bias when every label says y=1.
+  const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
+  assert.equal(usable(onlyHides), false);
+  assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0 });
+
+  const m = fit(onlyHides);
+  assert.ok(m.score(jit(IB, 7), jit(TB, 7)) > 0.9, "a one-class fit really does saturate");
+
+  const mixed = [...onlyHides, ...[0, 1, 2].map(k => ({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0 }))];
+  assert.equal(usable(mixed), true);
+});
+
+test("rare positives survive a pile of negatives", () => {
+  // Class weighting: without it the cheapest way to fit 4 hides against 200
+  // keeps is to never hide anything.
+  const labels = [];
+  for (let k = 0; k < 4; k++) labels.push({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 });
+  for (let k = 0; k < 200; k++) labels.push({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0 });
+  const m = fit(labels);
+  assert.ok(m.score(jit(IA, 8001), jit(TA, 8992)) > 0.5, "hide class was drowned out");
+  assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
 });
 
 test("holdout reports accuracy on data it did not train on", () => {

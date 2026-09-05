@@ -6,12 +6,12 @@ async function run() {
   let { threshold } = await browser.storage.local.get({ threshold: 0.85 });
   browser.storage.onChanged.addListener(c => c.threshold && (threshold = c.threshold.newValue));
 
-  // Right-clicking is the whole "this is a bad post" UI. Cheaper and far less
-  // fragile than injecting a button into every post on every site.
+  // Right-clicking is the whole teaching UI, in both directions. Cheaper and far
+  // less fragile than injecting buttons into every post on every site.
   let target = null;
   addEventListener("contextmenu", e => (target = e.target.closest?.(site.post)), true);
   browser.runtime.onMessage.addListener(msg => {
-    if (msg.type === "teach" && target) teach(target, 1);
+    if (msg.type === "teach" && target) teach(target, msg.y);
   });
 
   // Classify just before a post scrolls in, not on page load -- a long thread is
@@ -38,25 +38,45 @@ async function run() {
     }).catch(() => null);
     if (!res) return;
     post.dataset.sieve = res.p.toFixed(2);   // every post carries its score, for tuning the threshold
-    if (res.p > threshold) collapse(post, res.p);
+    // Until both classes have a few labels the score means nothing, so record it
+    // for tuning but don't act on it.
+    if (res.ready && res.p > threshold) collapse(post, res.p);
   }
 
+  const bar = (post, text) => {
+    post.querySelector(":scope > .sieve-bar")?.remove();
+    const el = document.createElement("div");
+    el.className = "sieve-bar";
+    el.textContent = text;
+    post.prepend(el);
+    return el;
+  };
+
   function collapse(post, p) {
-    if (post.querySelector(":scope > .sieve-bar")) return;
-    const bar = document.createElement("div");
-    bar.className = "sieve-bar";
-    bar.textContent = `hidden ${p.toFixed(2)} — show`;
-    bar.onclick = () => teach(post, 0);
-    post.prepend(bar);
+    if (post.classList.contains("sieve-hidden")) return;
+    bar(post, `hidden ${p.toFixed(2)} — click if this is fine`).onclick = () => teach(post, 0);
     post.classList.add("sieve-hidden");
   }
 
   async function teach(post, y) {
-    await browser.runtime.sendMessage({
+    const res = await browser.runtime.sendMessage({
       type: "label", y, text: site.text(post), img: site.image(post),
-    });
-    if (y) return collapse(post, 1);
+    }).catch(() => null);
+    if (!res) return;
+
+    // Feedback matters here: marking a visible post "fine" otherwise looks like
+    // nothing happened, and the tally is what tells you how far you still are
+    // from the point where filtering switches on.
+    const tally = `${res.pos} hide / ${res.neg} keep`
+      + (res.ready ? "" : `, filtering starts at ${res.need} of each`);
+
+    if (y) {
+      post.classList.add("sieve-hidden");
+      bar(post, `hidden — ${tally}`).onclick = () => teach(post, 0);
+      return;
+    }
     post.classList.remove("sieve-hidden");
-    post.querySelector(":scope > .sieve-bar")?.remove();
+    const el = bar(post, `marked fine — ${tally}`);
+    setTimeout(() => el.remove(), 3000);
   }
 }

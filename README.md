@@ -16,10 +16,22 @@ download from Hugging Face.
 
 ## Use
 
-Right-click a post → "sieve: hide posts like this". That's the only input.
-Posts scoring above the threshold collapse to a one-line bar; clicking the bar
-un-teaches and expands it. Every post carries its score in `data-sieve`, so
-inspect a few to pick a threshold in the options page.
+Right-click a post → "sieve: hide posts like this" or "sieve: this post is
+fine". That's the whole interface. Posts scoring above the threshold collapse to
+a one-line bar; clicking the bar marks it fine and expands it. Every post carries
+its score in `data-sieve`, so inspect a few to pick a threshold in the options
+page.
+
+**You have to teach it both directions.** Filtering stays off until there are at
+least 3 labels of each class, and this is not politeness — logistic regression
+trained on one class is degenerate. Every gradient step pushes the bias the same
+way with nothing pushing back, so it saturates and scores *everything* ~1.00.
+Feed it four "hide" clicks and no "fine" clicks and it will hide the entire page,
+including a post with a USB logo and no relevant text. `usable()` in `model.js`
+refuses to filter until both classes exist; the options page says so plainly.
+
+Labels are also class-balanced when fitting, so a handful of hides doesn't get
+drowned out once the keeps pile up.
 
 The first page load downloads ~40 MB of CLIP weights into the browser cache.
 After that it's local and cached; repeated images are cached by URL, which on an
@@ -62,6 +74,14 @@ reload.
 - Model *weights* are fetched from Hugging Face at run time and that's fine —
   they're data. The ONNX *runtime* is vendored, because remotely-hosted code is
   what gets an add-on rejected.
+- **CLIP embeddings are anisotropic.** They sit in a narrow cone, so two
+  unrelated images still have cosine ~0.8. The synthetic vectors in `test.js`
+  reproduce this deliberately — with near-orthogonal vectors every test here is
+  easier than reality, and the one-class blow-up in particular measures 0.86
+  instead of the 0.98 you actually get.
+- `fit()` anneals the learning rate. With a flat rate it hasn't converged by the
+  last epoch, and the order you happened to click labels in shifts scores by up
+  to 0.17 — enough to flip a post across the threshold.
 
 ## Adding a site
 

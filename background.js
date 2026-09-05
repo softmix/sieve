@@ -2,7 +2,7 @@ import {
   AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection,
   CLIPVisionModelWithProjection, RawImage, env,
 } from "./vendor/transformers.js";
-import { Model, ZERO, l2, fit, holdout } from "./model.js";
+import { Model, ZERO, l2, fit, holdout, usable, counts, MIN_PER_CLASS } from "./model.js";
 
 const MODEL = "Xenova/clip-vit-base-patch32";
 
@@ -95,7 +95,9 @@ browser.runtime.onMessage.addListener(async msg => {
       spent += performance.now() - t;
       // Inference is serialised, so this average is also the throughput ceiling.
       if (++scored % 25 === 1) console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms avg`);
-      return { p: model.score(e.img, e.txt) };
+      // ready=false means the score is not yet meaningful and nothing should be
+      // hidden on the strength of it. See usable() in model.js.
+      return { p: model.score(e.img, e.txt), ready: usable(labels) };
     }
     case "label": {
       const e = await embed(msg.text, msg.img);
@@ -104,11 +106,12 @@ browser.runtime.onMessage.addListener(async msg => {
       // recency drift you get from applying single gradient steps forever.
       model = fit(labels);
       await browser.storage.local.set({ labels });
-      console.log(`sieve: label y=${msg.y}, ${labels.length} total`);
-      return { n: labels.length };
+      const c = counts(labels);
+      console.log(`sieve: label y=${msg.y} -> ${c.pos} hide / ${c.neg} keep`);
+      return { ...c, ready: usable(labels), need: MIN_PER_CLASS };
     }
     case "stats":
-      return { n: labels.length, pos: labels.filter(l => l.y === 1).length, holdout: holdout(labels) };
+      return { ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS, holdout: holdout(labels) };
     case "export":
       return labels.map(l => ({ img: [...l.img], txt: [...l.txt], y: l.y, ts: l.ts }));
     case "reset":
@@ -119,10 +122,11 @@ browser.runtime.onMessage.addListener(async msg => {
   }
 });
 
-browser.contextMenus.create({
-  id: "sieve-hide",
-  title: "sieve: hide posts like this",
-  contexts: ["page", "selection", "image", "link"],
-});
+// Both directions need to be one click. Positives alone can't train this model,
+// and in practice you spot false positives more often than you spot new hides.
+const MENU = { "sieve-hide": "sieve: hide posts like this", "sieve-keep": "sieve: this post is fine" };
+for (const [id, title] of Object.entries(MENU))
+  browser.contextMenus.create({ id, title, contexts: ["page", "selection", "image", "link"] });
+
 browser.contextMenus.onClicked.addListener((info, tab) =>
-  browser.tabs.sendMessage(tab.id, { type: "teach" }));
+  browser.tabs.sendMessage(tab.id, { type: "teach", y: info.menuItemId === "sieve-hide" ? 1 : 0 }));

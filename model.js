@@ -64,12 +64,35 @@ export class Model {
   }
 }
 
+export const MIN_PER_CLASS = 3;
+
+export const counts = labels => {
+  const pos = labels.reduce((n, l) => n + l.y, 0);
+  return { pos, neg: labels.length - pos };
+};
+
+// Trained on one class only, this model is not merely inaccurate, it's
+// degenerate: every gradient step pushes the bias the same way and nothing
+// pushes back, so it saturates and scores everything ~1.00. Refuse to filter
+// until both classes exist rather than hiding the entire page.
+export const usable = labels => {
+  const { pos, neg } = counts(labels);
+  return pos >= MIN_PER_CLASS && neg >= MIN_PER_CLASS;
+};
+
 // Refit from scratch over the whole label log. Online learn() drifts toward
 // whatever you clicked most recently; this doesn't, and it's cheap enough
 // (1537 params) to just re-run whenever labels change.
-export function fit(labels, { epochs = 30, lr = 0.5, decay = 1e-4 } = {}) {
+// ponytail: cost is O(labels * epochs) on every click -- ~200ms at 240 labels,
+// ~1s at 1000. Warm-start from the current weights if that ever gets annoying.
+export function fit(labels, { epochs = 100, lr = 0.5, decay = 1e-3 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
+  // Balanced class weights. A filter exists for rare things, so a handful of
+  // "hide" labels must not be drowned out by everything marked fine -- without
+  // this the model converges on never hiding anything as soon as the keeps pile up.
+  const { pos, neg } = counts(labels);
+  const wt = y => (y ? labels.length / (2 * (pos || 1)) : labels.length / (2 * (neg || 1)));
   let seed = 1;
   const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
   for (let e = 0; e < epochs; e++) {
@@ -77,7 +100,12 @@ export function fit(labels, { epochs = 30, lr = 0.5, decay = 1e-4 } = {}) {
       const j = (rnd() * (i + 1)) | 0;
       [idx[i], idx[j]] = [idx[j], idx[i]];
     }
-    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, lr, decay);
+    // Annealed step. With a flat rate this hasn't converged by the last epoch,
+    // so the order you happened to click labels in shifts scores by up to 0.17 --
+    // enough to flip a post either side of the threshold. Annealing takes that
+    // to 0.002.
+    const step = lr / (1 + e);
+    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, step * wt(labels[i].y), decay);
   }
   return m;
 }

@@ -17,7 +17,11 @@ async function stats() {
   const h = s.holdout
     ? `holdout accuracy: ${(s.holdout.acc * 100).toFixed(0)}% on ${s.holdout.n} held-out labels`
     : "holdout accuracy: not enough labels yet";
-  $("stats").textContent = `${s.n} labels (${s.pos} hide, ${s.n - s.pos} keep)\n${h}`;
+  // Say plainly when filtering is off. Trained on one class this model saturates
+  // and scores everything ~1.00, so it stays disabled rather than hiding the page.
+  const state = s.ready ? "filtering active"
+    : `filtering off — needs ${s.need} of each class (have ${s.pos} hide, ${s.neg} keep)`;
+  $("stats").textContent = `${s.pos + s.neg} labels (${s.pos} hide, ${s.neg} keep)\n${state}\n${h}`;
 }
 stats();
 
