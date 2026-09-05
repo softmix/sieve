@@ -66,9 +66,19 @@ export class Model {
 
 export const MIN_PER_CLASS = 3;
 
+// A post you scrolled past without hiding is weak evidence that it's fine --
+// real signal, but nothing like the strength of saying so. Keeping it low-weight
+// means hundreds of them inform the model without ever outvoting a click, and
+// it's why you only have to mark the *bad* ones by hand.
+export const SEEN_WEIGHT = 0.15;
+
 export const counts = labels => {
-  const pos = labels.reduce((n, l) => n + l.y, 0);
-  return { pos, neg: labels.length - pos };
+  let pos = 0, neg = 0, taught = 0;
+  for (const l of labels) {
+    if (l.y) pos++; else neg++;
+    if (l.src !== "seen") taught++;
+  }
+  return { pos, neg, taught };
 };
 
 // Trained on one class only, this model is not merely inaccurate, it's
@@ -99,11 +109,14 @@ export const usable = labels => {
 export function fit(labels, { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
-  // Balanced class weights. A filter exists for rare things, so a handful of
-  // "hide" labels must not be drowned out by everything marked fine -- without
-  // this the model converges on never hiding anything as soon as the keeps pile up.
-  const { pos, neg } = counts(labels);
-  const wt = y => (y ? labels.length / (2 * (pos || 1)) : labels.length / (2 * (neg || 1)));
+  // Balanced class weights, computed over sample weight rather than count so
+  // low-weight "seen" labels dilute correctly. A filter exists for rare things,
+  // so a handful of "hide" labels must not be drowned out by the pile of keeps --
+  // without this the model converges on never hiding anything.
+  let wpos = 0, wneg = 0;
+  for (const l of labels) l.y ? (wpos += l.w ?? 1) : (wneg += l.w ?? 1);
+  const total = wpos + wneg;
+  const wt = l => (l.w ?? 1) * total / (2 * ((l.y ? wpos : wneg) || 1));
   let seed = 1;
   const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
   for (let e = 0; e < epochs; e++) {
@@ -111,7 +124,7 @@ export function fit(labels, { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
       const j = (rnd() * (i + 1)) | 0;
       [idx[i], idx[j]] = [idx[j], idx[i]];
     }
-    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, lr * wt(labels[i].y), decay);
+    for (const i of idx) m.learn(labels[i].img, labels[i].txt, labels[i].y, lr * wt(labels[i]), decay);
   }
   return m;
 }

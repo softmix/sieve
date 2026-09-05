@@ -21,7 +21,11 @@ async function stats() {
   // and scores everything ~1.00, so it stays disabled rather than hiding the page.
   const state = s.ready ? "filtering active"
     : `filtering off — needs ${s.need} of each class (have ${s.pos} hide, ${s.neg} keep)`;
-  $("stats").textContent = `${s.pos + s.neg} labels (${s.pos} hide, ${s.neg} keep)\n${state}\n${h}`;
+  // "seen" are posts you scrolled past without hiding: weak evidence, gathered
+  // automatically, and the reason you don't have to click ✓ constantly.
+  const seen = s.pos + s.neg - s.taught;
+  $("stats").textContent =
+    `${s.taught} clicked (${s.pos} hide, ${s.neg - seen} fine) + ${seen} seen\n${state}\n${h}`;
 }
 stats();
 

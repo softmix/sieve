@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { K, Model, ZERO, l2, fit, holdout, usable, counts } from "./model.js";
+import { K, Model, ZERO, l2, fit, holdout, usable, counts, SEEN_WEIGHT } from "./model.js";
 
 // Synthetic stand-ins for CLIP embeddings. jit() nudges one toward a fresh
 // random direction so train and test never see the same vector -- anything that
@@ -89,7 +89,7 @@ test("one-class labels are rejected instead of hiding everything", () => {
   // gone at 1.00. Nothing counteracts the bias when every label says y=1.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   assert.equal(usable(onlyHides), false);
-  assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0 });
+  assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0, taught: 4 });
 
   const m = fit(onlyHides);
   assert.ok(m.score(jit(IB, 7), jit(TB, 7)) > 0.9, "a one-class fit really does saturate");
@@ -106,6 +106,23 @@ test("rare positives survive a pile of negatives", () => {
   for (let k = 0; k < 200; k++) labels.push({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0 });
   const m = fit(labels);
   assert.ok(m.score(jit(IA, 8001), jit(TA, 8992)) > 0.5, "hide class was drowned out");
+  assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
+});
+
+test("a pile of weak 'seen' labels cannot outvote a few explicit hides", () => {
+  // The point of implicit negatives is that scrolling past 300 posts stands in
+  // for clicking ✓ 300 times. It only works if they stay quiet: the cheapest way
+  // to fit 4 hides against 300 keeps is to hide nothing at all.
+  const labels = [];
+  for (let k = 0; k < 4; k++) labels.push({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1, src: "hide" });
+  for (let k = 0; k < 300; k++)
+    labels.push({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0, w: SEEN_WEIGHT, src: "seen" });
+
+  assert.deepEqual(counts(labels), { pos: 4, neg: 300, taught: 4 });
+  assert.equal(usable(labels), true, "seen labels should satisfy the negative class");
+
+  const m = fit(labels);
+  assert.ok(m.score(jit(IA, 8001), jit(TA, 8992)) > 0.85, "explicit hides got drowned out");
   assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
 });
 

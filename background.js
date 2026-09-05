@@ -2,7 +2,7 @@ import {
   AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection,
   CLIPVisionModelWithProjection, RawImage, env,
 } from "./vendor/transformers.js";
-import { Model, ZERO, l2, fit, holdout, usable, counts, MIN_PER_CLASS } from "./model.js";
+import { Model, ZERO, l2, fit, holdout, usable, counts, MIN_PER_CLASS, SEEN_WEIGHT } from "./model.js";
 
 const MODEL = "Xenova/clip-vit-base-patch32";
 
@@ -12,6 +12,18 @@ env.backends.onnx.wasm.wasmPaths = browser.runtime.getURL("vendor/");
 // Left at the default it tries anyway and warns on every single load.
 env.backends.onnx.wasm.numThreads = 1;
 
+// Tried in order, first one that loads *and* runs wins.
+//
+// wasm is first because it measured faster, which was not the expectation:
+// 254-335ms per post against WebGPU's 358-563ms, at half the download (q8 vs the
+// fp16 WebGPU needs). ViT-B/32 at batch-of-1 is dispatch-bound, so the GPU
+// round-trip costs more than the work it saves. Flip these if batching ever
+// lands -- that's the regime where WebGPU should win.
+const BACKENDS = [
+  { device: "wasm", dtype: "q8" },
+  { device: "webgpu", dtype: "fp16" },
+];
+
 let engine;
 const load = () => (engine ??= (async () => {
   const at = {};   // one line per decile per file, not one per chunk
@@ -19,14 +31,32 @@ const load = () => (engine ??= (async () => {
     const d = (x.progress / 10) | 0;
     if (x.status === "progress" && at[x.file] !== d) console.log(`sieve: ${(at[x.file] = d) * 10}% ${x.file}`);
   };
-  const [tok, proc, txt, vis] = await Promise.all([
+  const [tok, proc] = await Promise.all([
     AutoTokenizer.from_pretrained(MODEL),
     AutoProcessor.from_pretrained(MODEL),
-    CLIPTextModelWithProjection.from_pretrained(MODEL, { dtype: "q8", progress_callback }),
-    CLIPVisionModelWithProjection.from_pretrained(MODEL, { dtype: "q8", progress_callback }),
   ]);
-  console.log("sieve: clip ready");
-  return { tok, proc, txt, vis };
+
+  for (const cfg of BACKENDS) {
+    if (cfg.device === "webgpu" && !navigator.gpu) continue;
+    try {
+      const [txt, vis] = await Promise.all([
+        CLIPTextModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
+        CLIPVisionModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
+      ]);
+      // Loading successfully doesn't prove the backend can run -- WebGPU tends
+      // to fail on the first actual inference, not at construction. Warming up
+      // here moves the fallback to startup instead of the first post, and eats
+      // the session-init latency spike while we're at it.
+      await vis(await proc(new RawImage(new Uint8ClampedArray(224 * 224 * 3), 224, 224, 3)));
+      await txt(tok(["warmup"], { padding: true, truncation: true }));
+
+      console.log(`sieve: clip ready on ${cfg.device}/${cfg.dtype}`);
+      return { tok, proc, txt, vis };
+    } catch (e) {
+      console.warn(`sieve: ${cfg.device}/${cfg.dtype} unusable (${e.message}), trying next`);
+    }
+  }
+  throw new Error("sieve: no working inference backend");
 })());
 
 // The background page is persistent (MV2), so these survive navigation and even
@@ -57,7 +87,12 @@ async function embedImage(src) {
   if (!src) return ZERO;
   if (cache.img.has(src)) return cache.img.get(src);
   const { proc, vis } = await load();
-  const { image_embeds } = await vis(await proc(await RawImage.read(src)));
+  // Timed separately because it's a network fetch plus a decode, and on a fast
+  // backend it can easily cost more than the inference it feeds.
+  const t = performance.now();
+  const raw = await RawImage.read(src);
+  fetched += performance.now() - t;
+  const { image_embeds } = await vis(await proc(raw));
   return keep(cache.img, src, l2(image_embeds.tolist()[0]));
 }
 
@@ -85,24 +120,70 @@ const toF32 = v => v instanceof Float32Array ? v
 
 let model = new Model();
 let labels = [];
-let scored = 0, spent = 0, queued = 0;
+let scored = 0, spent = 0, queued = 0, fetched = 0;
 
 // Exact recall, in front of the model. A post you explicitly marked is a stored
 // fact, not a prediction -- it must stay hidden on reload even while the model
 // is still warming up and even if the model would score it 0.2. Generalising to
 // *other* posts is the model's job; remembering this one isn't.
+//
+// Only explicit labels go in here. A merely-seen post must stay scoreable, or it
+// would freeze at whatever the model thought the first time it scrolled past.
 const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
-let taught = new Map();
-const reindex = () => (taught = new Map(labels.filter(l => l.key).map(l => [l.key, l.y])));
+let taught = new Map(), seenKeys = new Set();
+
+function reindex() {
+  taught = new Map();
+  seenKeys = new Set();
+  for (const l of labels) {
+    if (!l.key) continue;
+    if (l.src === "seen") seenKeys.add(l.key); else taught.set(l.key, l.y);
+  }
+}
+
+// Bounded, because these accrue on their own: every scored post adds one, so a
+// couple of catalog pages would otherwise put thousands through fit() on every
+// click. Oldest out.
+const SEEN_MAX = 300;
+let threshold = 0.85;
+
+function noteSeen(e, key) {
+  if (taught.has(key) || seenKeys.has(key)) return;
+  const seen = labels.filter(l => l.src === "seen");
+  if (seen.length >= SEEN_MAX) {
+    const drop = new Set(seen.slice(0, seen.length - SEEN_MAX + 1));
+    labels = labels.filter(l => !drop.has(l));
+  }
+  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, ts: Date.now() });
+  seenKeys.add(key);
+  soon();
+}
+
+// Refitting and writing storage on every scored post would be constant churn, so
+// implicit labels settle in batches. Explicit clicks still commit immediately.
+let timer = null;
+const soon = () => {
+  clearTimeout(timer);
+  timer = setTimeout(commit, 5000);
+};
+async function commit() {
+  clearTimeout(timer);
+  model = fit(labels);
+  await browser.storage.local.set({ labels });
+}
 
 const booted = (async () => {
-  const s = await browser.storage.local.get({ labels: [] });
+  const s = await browser.storage.local.get({ labels: [], threshold: 0.85 });
+  threshold = s.threshold;
   labels = s.labels.map(l => ({ ...l, img: toF32(l.img), txt: toF32(l.txt) }));
   reindex();
   if (labels.length) model = fit(labels);
   const c = counts(labels);
-  console.log(`sieve: ${c.pos} hide / ${c.neg} keep loaded, filtering ${usable(labels) ? "on" : "off"}`);
+  console.log(`sieve: ${c.pos} hide / ${c.neg} keep (${c.taught} clicked) loaded,`
+    + ` filtering ${usable(labels) ? "on" : "off"}`);
 })();
+
+browser.storage.onChanged.addListener(c => c.threshold && (threshold = c.threshold.newValue));
 
 browser.runtime.onMessage.addListener(async msg => {
   await booted;
@@ -118,24 +199,29 @@ browser.runtime.onMessage.addListener(async msg => {
       // Chatty for the first few: call 1 carries ONNX session warmup and is
       // wildly unrepresentative of steady state.
       if (++scored <= 5 || scored % 25 === 0)
-        console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms compute avg,`
-          + ` ${(queued / scored) | 0}ms queued avg (this one ${e.ms | 0}ms)`);
+        console.log(`sieve: ${scored} scored, ${(spent / scored) | 0}ms avg`
+          + ` = ${(fetched / scored) | 0}ms image fetch + ${((spent - fetched) / scored) | 0}ms inference`
+          + ` (queued ${(queued / scored) | 0}ms)`);
       // ready=false means the score is not yet meaningful and nothing should be
       // hidden on the strength of it. See usable() in model.js.
-      return { p: model.score(e.img, e.txt), ready: usable(labels) };
+      const p = model.score(e.img, e.txt);
+      // Only posts the model left alone. If it flagged one and you didn't
+      // correct it, that's agreement -- recording a contradicting "fine" would
+      // train against the very thing you asked it to catch.
+      if (p <= threshold) noteSeen(e, keyOf(msg.text, msg.img));
+      return { p, ready: usable(labels) };
     }
     case "label": {
       const e = await embed(msg.text, msg.img);
       const key = keyOf(msg.text, msg.img);
-      labels = labels.filter(l => l.key !== key);   // re-labelling replaces, not stacks
-      labels.push({ img: e.img, txt: e.txt, y: msg.y, key, ts: Date.now() });
+      // Replaces, not stacks -- including any weak "seen" entry for this post,
+      // which a click supersedes outright.
+      labels = labels.filter(l => l.key !== key);
+      labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, ts: Date.now() });
       reindex();
-      // 1537 params: refitting the whole log is milliseconds and avoids the
-      // recency drift you get from applying single gradient steps forever.
-      model = fit(labels);
-      await browser.storage.local.set({ labels });
+      await commit();
       const c = counts(labels);
-      console.log(`sieve: label y=${msg.y} -> ${c.pos} hide / ${c.neg} keep`);
+      console.log(`sieve: ${msg.y ? "hide" : "keep"} -> ${c.pos} hide / ${c.neg} keep (${c.taught} clicked)`);
       return { ...c, ready: usable(labels), need: MIN_PER_CLASS };
     }
     case "stats":

@@ -14,21 +14,47 @@ async function run() {
     if (msg.type === "teach" && target) teach(target, msg.y);
   });
 
-  // Classify just before a post scrolls in, not on page load -- a long thread is
-  // hundreds of posts and each image is an inference.
-  const io = new IntersectionObserver(es => {
-    for (const e of es) if (e.isIntersecting) { io.unobserve(e.target); classify(e.target); }
-  }, { rootMargin: "300px" });
-
+  // Every post gets scored eventually, nearest-to-viewport first. Skipping
+  // offscreen posts would be cheaper but you'd then see each one flash into view
+  // before being hidden, which defeats the point.
+  const pending = new Set();
   const seen = new WeakSet();
+
   const scan = () => {
+    const before = pending.size;
     for (const p of document.querySelectorAll(site.post))
       if (!seen.has(p)) {
         seen.add(p);
         set(p, {});     // draw the badge immediately so "not scored yet" is visible
-        io.observe(p);
+        pending.add(p);
       }
+    if (pending.size > before) pump();
   };
+
+  const distance = p => {
+    const r = p.getBoundingClientRect();
+    return r.bottom < 0 ? -r.bottom : r.top > innerHeight ? r.top - innerHeight : 0;
+  };
+
+  let pumping = false;
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
+    while (pending.size) {
+      // ponytail: O(n) rect reads to choose each post, so O(n^2) to drain a page.
+      // At ~200 posts that's noise beside one ~300ms inference, and re-reading
+      // position every time means it follows your scrolling for free -- a
+      // priority assigned at enqueue time goes stale the moment you move.
+      let best = null, bestD = Infinity;
+      for (const p of pending) {
+        const d = distance(p);
+        if (d < bestD) { bestD = d; best = p; if (!d) break; }
+      }
+      pending.delete(best);
+      await classify(best);
+    }
+    pumping = false;
+  }
 
   // ---- badge -------------------------------------------------------------
 

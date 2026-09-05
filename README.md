@@ -22,16 +22,24 @@ a one-line bar; clicking the bar marks it fine and expands it. Every post carrie
 its score in `data-sieve`, so inspect a few to pick a threshold in the options
 page.
 
-**You have to teach it both directions.** Filtering stays off until there are at
-least 3 labels of each class, and this is not politeness — logistic regression
-trained on one class is degenerate. Every gradient step pushes the bias the same
-way with nothing pushing back, so it saturates and scores *everything* ~1.00.
-Feed it four "hide" clicks and no "fine" clicks and it will hide the entire page,
-including a post with a USB logo and no relevant text. `usable()` in `model.js`
-refuses to filter until both classes exist; the options page says so plainly.
+**You mostly only have to mark the bad ones.** Any post the model leaves alone
+and you don't hide is recorded as a weak negative at `SEEN_WEIGHT` (0.15) — real
+evidence that it's fine, but nothing like the strength of clicking. Hundreds of
+them accumulate for free while you browse, so ✓ stays a deliberate signal rather
+than a chore. They're capped at 300, oldest out, and only recorded for posts the
+model *didn't* flag: if it hid something and you didn't correct it, that's
+agreement, and filing a contradicting "fine" would train against the thing you
+asked it to catch.
 
-Labels are also class-balanced when fitting, so a handful of hides doesn't get
-drowned out once the keeps pile up.
+Filtering still stays off until there are 3 labels of each class, and that is not
+politeness — logistic regression trained on one class is degenerate. Every
+gradient step pushes the bias the same way with nothing pushing back, so it
+saturates and scores *everything* ~1.00. Four "hide" clicks and no negatives will
+hide the entire page, including a post with a USB logo and no relevant text.
+Seen-labels satisfy the negative side, so in practice you need 3 hides.
+
+Fitting is class-balanced over sample *weight*, so a handful of hides isn't
+drowned out by the pile of keeps, and the weak ones dilute correctly.
 
 Each post carries a badge: the score, or `…` if it hasn't been scored yet, plus
 ✓ / ✗ buttons for bulk labelling. On a hidden post the score becomes a `▸` peek
@@ -42,12 +50,18 @@ The first page load downloads ~40 MB of CLIP weights into the browser cache.
 After that it's local and cached; repeated images are cached by URL, which on an
 imageboard is most of them.
 
-Measured on a 4chan catalog: **~170–330 ms of compute per post** (WASM,
-single-threaded). Inference is serialised behind one ORT session, so on a catalog
-page — where ~200 posts become visible at once — the queue wait dominates at
-2–3 s and takes about a minute to drain. Thread and index pages don't have this
-problem. If it becomes annoying, the fix is to drop queued work for posts that
-have scrolled away rather than to make inference faster.
+Every post gets scored, nearest-to-the-viewport first, re-evaluated after each
+one so it follows your scrolling. Skipping offscreen posts would be cheaper but
+you'd then watch each one flash into view before being hidden.
+
+Measured per post on a 4chan catalog: **~3 ms image fetch** (it's already decoded
+in the page) **+ ~250–330 ms inference**.
+
+WebGPU is implemented and works, but it is *slower here* — 358–563 ms against
+WASM's 254–335 ms, at twice the download, because ViT-B/32 at batch-of-1 is
+dispatch-bound rather than compute-bound. `BACKENDS` in `background.js` tries
+wasm first for that reason. Batching several images into one forward pass is the
+change that would make the GPU worth it.
 
 ## Dev
 
