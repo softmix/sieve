@@ -120,13 +120,35 @@ async function embedImages(srcs) {
 
 // One ORT session, so one batch at a time.
 let tail = Promise.resolve();
+
+// A WebGPU device lost after startup -- sleep/wake, driver reset -- keeps the
+// session object alive and fails every OrtRun from then on ("Buffer unmapped"
+// on the output readback). The load-time probe can't see that, so drop the
+// engine and run again: load() re-probes, and falls through to wasm if the
+// device is really gone. Only ever one rebuild per working spell, so a
+// permanently broken device fails fast instead of reloading on every batch.
+let mayRebuild = true;
 const embed = items => {
-  const run = tail.then(async () => {
+  const once = async () => {
     const t = performance.now();
     const txts = await embedTexts(items.map(i => i.text));
     const imgs = await embedImages(items.map(i => i.img));
     const ms = (performance.now() - t) / items.length;
     return items.map((_, i) => ({ txt: txts[i], img: imgs[i], ms }));
+  };
+  const run = tail.then(async () => {
+    try {
+      const out = await once();
+      mayRebuild = true;
+      return out;
+    } catch (e) {
+      if (!mayRebuild) throw e;
+      mayRebuild = false;
+      console.warn(`sieve: inference failed on ${backend} (${e.message}), rebuilding`);
+      engine = null;
+      backend = "loading";
+      return once();
+    }
   });
   tail = run.catch(() => {});
   return run;
