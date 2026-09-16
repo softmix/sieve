@@ -275,21 +275,40 @@ test("without centering the cone swamps the topics", () => {
   assert.ok(lo > 0.6, `uncentered vectors should all be crowded together, floor was ${lo.toFixed(3)}`);
 });
 
-test("textless posts do not cluster together for having no text", () => {
-  const items = topics();
-  // One per topic loses its text, so if they end up neighbours it can only be
-  // because of the hole rather than because of what they are.
-  const mute = [0, 12, 24];
-  for (const i of mute) items[i].txt = ZERO;
-  const vs = mapVectors(items).vecs;
+test("a post missing one modality does not cluster on the hole", () => {
+  // Symmetric, because the asymmetric version shipped and was visible on the
+  // first real archive with thread replies in it: text-only posts split off into
+  // their own territory, and the image clusters got *worse* at the same time --
+  // the image mean was being divided by every post while only some contributed,
+  // so the centering was under-applied and the cone crept back.
+  for (const gap of ["txt", "img"]) {
+    const items = topics();
+    const mute = [0, 12, 24];   // one per topic, so a wrong answer is unambiguous
+    for (const i of mute) items[i][gap] = ZERO;
+    const vs = mapVectors(items).vecs;
 
-  for (const i of mute) {
-    const own = vs.map((v, j) => ({ j, c: cos(vs[i], v) }))
-      .filter(x => x.j !== i)
-      .sort((a, b) => b.c - a.c)[0];
-    assert.equal(items[own.j].topic, items[i].topic,
-      `a textless post's nearest neighbour was topic ${items[own.j].topic}, not its own`);
+    for (const i of mute) {
+      const own = vs.map((v, j) => ({ j, c: cos(vs[i], v) }))
+        .filter(x => x.j !== i)
+        .sort((a, b) => b.c - a.c)[0];
+      assert.equal(items[own.j].topic, items[i].topic,
+        `with no ${gap}, nearest neighbour was topic ${items[own.j].topic}, not its own`);
+    }
   }
+});
+
+test("a modality gap does not weaken centering for everyone else", () => {
+  const whole = topics();
+  const gappy = topics();
+  for (let i = 0; i < gappy.length; i += 3) gappy[i].img = ZERO;   // a third have no image
+
+  // Topic separation among the *intact* posts must survive the others' gaps.
+  const keep = gappy.map((it, i) => i % 3 !== 0);
+  const a = mapVectors(whole).vecs.filter((_, i) => keep[i]);
+  const b = mapVectors(gappy).vecs.filter((_, i) => keep[i]);
+  const items = whole.filter((_, i) => keep[i]);
+  const [sa, sb] = [separation(a, items), separation(b, items)];
+  assert.ok(sb > sa * 0.8, `gaps cost the intact posts their separation: ${sa.toFixed(3)} -> ${sb.toFixed(3)}`);
 });
 
 test("a new post lands among its own topic, not in the middle", () => {

@@ -259,29 +259,32 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
 // layout. The centering mean has to be the one the layout was built with, or a
 // newcomer is measured from a different origin than its neighbours were.
 export function mapVectors(items, mu0 = null) {
-  const has = items.map(it => it.txt.some(x => x !== 0));
+  const hasI = items.map(it => it.img.some(x => x !== 0));
+  const hasT = items.map(it => it.txt.some(x => x !== 0));
   const mu = mu0 ?? new Float32Array(2 * K);
   if (!mu0) {
-    let nt = 0;
+    // Each modality's mean is over the posts that *have* it. Averaging a block
+    // over the whole set while only some contribute shrinks the mean toward
+    // zero, the centering is then under-applied, and the cone comes straight
+    // back -- which degrades every cluster, not just the ones with a gap.
+    let ni = 0, nt = 0;
     for (let k = 0; k < items.length; k++) {
       const it = items[k];
-      for (let i = 0; i < K; i++) mu[i] += it.img[i];
-      if (!has[k]) continue;
-      nt++;
-      for (let i = 0; i < K; i++) mu[K + i] += it.txt[i];
+      if (hasI[k]) { ni++; for (let i = 0; i < K; i++) mu[i] += it.img[i]; }
+      if (hasT[k]) { nt++; for (let i = 0; i < K; i++) mu[K + i] += it.txt[i]; }
     }
-    for (let i = 0; i < K; i++) mu[i] /= items.length || 1;
+    for (let i = 0; i < K; i++) mu[i] /= ni || 1;
     for (let i = K; i < 2 * K; i++) mu[i] /= nt || 1;
   }
 
+  // A missing modality gets the mean, so after centering that block is zero and
+  // the post compares on what it does have. Leaving ZERO in instead hands every
+  // one of them the same -mu block, and they cluster together for the single
+  // thing they have in common: the hole.
   const vecs = items.map((it, k) => {
     const v = new Float32Array(2 * K);
-    for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i];
-    // A textless post gets the mean text vector, so after centering its text
-    // block is zero and it compares on image alone. Leaving ZERO there instead
-    // hands every one of them the same -mu block, and they cluster together for
-    // the single thing they have in common: having no text.
-    if (has[k]) for (let i = 0; i < K; i++) v[K + i] = it.txt[i] - mu[K + i];
+    if (hasI[k]) for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i];
+    if (hasT[k]) for (let i = 0; i < K; i++) v[K + i] = it.txt[i] - mu[K + i];
     return l2(v);
   });
   return { mu, vecs };

@@ -24,6 +24,7 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": ["map.html"],
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true

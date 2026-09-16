@@ -1,3 +1,26 @@
+/* The map, over the catalog. An iframe of the extension's own map page rather
+   than a second renderer in the content script: the panel, the labelling and the
+   re-layout button all come along for free. */
+#sieve-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Over 4chan's own hover previews, which sit at 60. */
+  z-index: 2147483000;
+  background: Canvas;
+}
+
+#sieve-open {
+  display: inline-block;
+  margin: 4px 0;
+  font: 12px/1.4 monospace;
+  cursor: pointer;
+  opacity: .6;
+}
+#sieve-open:hover { opacity: 1; }
+
 /* Floated so it rides alongside the post's header line rather than adding a row
    to every post on the page. */
 .sieve-tag {

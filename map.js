@@ -12,7 +12,12 @@
 // point's nearest-neighbour distance, which is a local de-coning), and with no
 // per-cluster actions and no names there's nothing left for a hard partition to
 // do that the layout doesn't already do better.
-import { mapVectors, toF32 } from "./model.js";
+import { mapVectors, toF32, identOf } from "./model.js";
+
+// Same page, embedded over a catalog by the content script. The difference is
+// only emphasis: the posts on the board you're looking at stay lit and the rest
+// of your history dims behind them, so you see where today sits in it.
+const OVERLAY = location.hash === "#overlay";
 
 // The UMD bundle assigns a *namespace* to the global, so the constructor sits
 // one level down. Resolved rather than assumed, because `new UMAP()` on the
@@ -53,12 +58,17 @@ const INK = matchMedia("(prefers-color-scheme: dark)").matches ? "#fff" : "#111"
 const toScreen = q => [(q.x - view.x) * view.k + cv.width / 2, (q.y - view.y) * view.k + cv.height / 2];
 
 function fitView() {
-  if (!pts.length) return;
-  const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+  // In overlay mode, frame this board rather than the whole archive -- but fall
+  // back to everything if none of today's threads are on the map yet.
+  const on = here ? pts.filter(q => q.here) : pts;
+  const use = on.length > 1 ? on : pts;
+  if (!use.length) return;
+  const xs = use.map(q => q.x), ys = use.map(q => q.y);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
   view.x = (x0 + x1) / 2;
   view.y = (y0 + y1) / 2;
-  view.k = 0.9 * Math.min(cv.width / (x1 - x0 || 1), cv.height / (y1 - y0 || 1));
+  // Capped, or a board whose threads all landed in one spot zooms to absurdity.
+  view.k = Math.min(60, 0.9 * Math.min(cv.width / (x1 - x0 || 1), cv.height / (y1 - y0 || 1)));
 }
 
 function resize() {
@@ -68,6 +78,8 @@ function resize() {
   cv.height = Math.max(1, r.height * d);
   draw();
 }
+
+let here = null;    // ids of the posts on the page underneath, in overlay mode
 
 function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -79,10 +91,12 @@ function draw() {
     const [sx, sy] = toScreen(q);
     if (sx < -r || sy < -r || sx > cv.width + r || sy > cv.height + r) continue;
 
+    ctx.globalAlpha = here && !q.here ? 0.18 : 1;
     ctx.beginPath();
     ctx.arc(sx, sy, q === focused ? r * 2 : r, 0, Math.PI * 2);
     ctx.fillStyle = fill(q.p);
     ctx.fill();
+    ctx.globalAlpha = 1;
 
     // Rings are categorical on top of the continuous fill: what you decided,
     // and what the filter is collapsing right now.
@@ -246,15 +260,28 @@ function settle(xy, note) {
     .map(e => ({
       n: e.n, id: e.id, url: e.url, text: e.text, img: e.img,
       p: st.p[e.n], mark: st.mark[e.n], hidden: st.ready && st.p[e.n] > st.threshold,
-      x: xy[e.n][0], y: xy[e.n][1],
+      x: xy[e.n][0], y: xy[e.n][1], here: here ? here.has(e.id) : false,
     }));
   const hid = pts.filter(q => q.hidden).length;
   say(`${pts.length} posts, ${hid} currently filtered`
+    + (st.offMap ? `, ${st.offMap} text-only left off` : "")
     + (st.ready ? "" : " — filtering is off") + (note ? ` — ${note}` : ""));
   resize();
   fitView();
   draw();
 }
+
+// The content script sends the board's post links once the frame has loaded.
+// It may arrive either side of boot() finishing, so apply whatever is ready.
+addEventListener("message", e => {
+  if (e.data?.sieve !== "here") return;
+  here = new Set(e.data.urls.map(u => identOf(u)?.id).filter(Boolean));
+  $("lg-here").hidden = false;
+  if (!pts.length) return;
+  for (const q of pts) q.here = here.has(q.id);
+  fitView();
+  draw();
+});
 
 let st = null;
 async function boot() {
@@ -281,6 +308,13 @@ async function boot() {
     $("refit").disabled = true;
     try { settle(await relayout()); } finally { $("refit").disabled = false; }
   };
+}
+
+if (OVERLAY) {
+  const close = () => parent.postMessage({ sieve: "close" }, "*");
+  $("close").hidden = false;
+  $("close").onclick = close;
+  addEventListener("keydown", e => e.key === "Escape" && close());
 }
 
 boot().catch(e => say(`failed: ${e.message}`));

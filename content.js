@@ -60,10 +60,48 @@ async function run() {
       browser.runtime.sendMessage({ type: "prune", board, threads }).catch(() => {});
   };
 
+  // The map, over the catalog. An iframe of the extension's own map page rather
+  // than a second renderer here: the inspect panel, labelling and re-layout come
+  // with it, and there's only one thing to keep working.
+  const ORIGIN = new URL(browser.runtime.getURL("map.html")).origin;
+  let frame = null;
+
+  function toggleMap() {
+    if (frame) { frame.remove(); frame = null; return; }
+    frame = document.createElement("iframe");
+    frame.id = "sieve-overlay";
+    frame.src = browser.runtime.getURL("map.html") + "#overlay";
+    frame.onload = () => frame?.contentWindow.postMessage({
+      sieve: "here",
+      urls: [...document.querySelectorAll(site.post)].map(p => site.link?.(p)).filter(Boolean),
+    }, ORIGIN);
+    document.body.append(frame);
+  }
+
+  // The frame can't remove itself, so its close button asks.
+  addEventListener("message", e => {
+    if (e.origin === ORIGIN && e.data?.sieve === "close" && frame) toggleMap();
+  });
+
+  // Inserted *before* the thread container rather than inside it: 4chan rebuilds
+  // that container on its own sort and filter, and anything within goes with it.
+  const mapLink = posts => {
+    if (!site.catalog || document.getElementById("sieve-open")) return;
+    const box = posts[0]?.parentElement;
+    if (!box?.parentElement) return;
+    const a = document.createElement("a");
+    a.id = "sieve-open";
+    a.textContent = "▦ sieve map";
+    a.title = "the whole archive, laid out — this board's threads highlighted";
+    a.onclick = toggleMap;
+    box.parentElement.insertBefore(a, box);
+  };
+
   const scan = () => {
     const before = pending.size;
     const posts = [...document.querySelectorAll(site.post)];
     prune(posts);
+    mapLink(posts);
     for (const p of posts)
       if (!seen.has(p)) {
         seen.add(p);

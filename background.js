@@ -300,6 +300,24 @@ async function commit() {
   await browser.storage.local.set({ labels });
 }
 
+// The map is a picture, and a post with no image isn't one. They also don't
+// share a subspace with the posts that do: a missing modality leaves that block
+// at zero after centering, so an imageless post is systematically less similar
+// to everything that has one and lands in its own region however the imputation
+// is done. Thread replies are mostly textless-image-less, and mixing them in
+// visibly degraded the image clusters.
+//
+// Tested on the vector rather than on `e.img`, because a thumbnail that failed
+// to fetch leaves a url behind and a ZERO embedding. They stay archived and
+// still nudge -- they are just not on the map.
+const onMap = v => v && v.img.some(x => x !== 0);
+
+// A stored centering mean is only meaningful to the mapVectors() that produced
+// it, and v2 changed shape: per-modality means over the posts that have each
+// modality, with gaps imputed. Bump this whenever that changes, or new posts get
+// placed against an origin that no longer exists.
+const LAYOUT_V = 2;
+
 // Archive vectors, loaded on demand rather than at boot. Nothing on the browsing
 // path needs them -- dedupe and pruning run off the index -- so the cost lands on
 // opening a view instead of on every browser start. Kept in memory afterwards;
@@ -481,14 +499,16 @@ browser.runtime.onMessage.addListener(async msg => {
       const vs = await vectors();
       const on = ready();
       const p = {}, mark = {};
+      let offMap = 0;
       for (const e of arc) {
         const v = vs.get(e.n);
         if (!v) continue;
+        if (!onMap(v)) { offMap++; continue; }
         p[e.n] = score(model, ambient, v.img, v.txt);
         const y = taughtIds.get(e.id);
         if (y !== undefined) mark[e.n] = y;
       }
-      return { p, mark, threshold, ready: on };
+      return { p, mark, offMap, threshold, ready: on };
     }
 
     // Coordinates for everything archived. New posts are placed against the
@@ -496,11 +516,11 @@ browser.runtime.onMessage.addListener(async msg => {
     // the same map every time you open it -- spatial memory is most of what a
     // training tool is for, and a layout that rearranges itself has none.
     case "coords": {
-      const { layoutMu } = await browser.storage.local.get({ layoutMu: null });
+      const { layoutMu, layoutV } = await browser.storage.local.get({ layoutMu: null, layoutV: 0 });
       const vs = await vectors();
-      const rows = arc.filter(e => vs.has(e.n));
-      // Nothing laid out yet: only the map has UMAP, so it has to do the first one.
-      if (!layoutMu || !rows.some(e => e.xy)) return { needLayout: true };
+      const rows = arc.filter(e => onMap(vs.get(e.n)));
+      // Nothing usable laid out yet: only the map has UMAP, so it does the first one.
+      if (!layoutMu || layoutV !== LAYOUT_V || !rows.some(e => e.xy)) return { needLayout: true };
 
       const { vecs } = mapVectors(rows.map(e => vs.get(e.n)), toF32(layoutMu));
       const placed = [], todo = [];
@@ -522,7 +542,7 @@ browser.runtime.onMessage.addListener(async msg => {
         const e = byN.get(+n);
         if (e) e.xy = xy;
       }
-      await browser.storage.local.set({ layoutMu: msg.mu });
+      await browser.storage.local.set({ layoutMu: msg.mu, layoutV: LAYOUT_V });
       await flush();
       console.log(`sieve: laid out ${Object.keys(msg.xy).length} posts`);
       return { ok: true };
