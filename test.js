@@ -83,8 +83,7 @@ test("fit refits from the log and is order-independent", () => {
 });
 
 test("one-class labels are rejected instead of hiding everything", () => {
-  // Guards: hide two posts, reload, and the whole page is gone at 1.00, because
-  // nothing counteracts the bias when every label says y=1.
+  // Otherwise: hide two posts, reload, and the whole page is gone at 1.00.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   assert.equal(usable(onlyHides, new Ambient()), false);
   assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0 });
@@ -107,14 +106,9 @@ test("rare positives survive a pile of negatives", () => {
   assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
 });
 
-// A browsing session. Mostly posts unrelated to anything labelled, with a real
-// keep every third, which is roughly what a board looks like.
-//
-// `gated` mirrors background.js: a nudge is skipped for a post that was actually
-// *hidden*, because pushing that down would train against the thing you asked it
-// to catch. Note the gate is on hidden, not on high-scoring -- with filtering
-// off nothing is hidden, so everything is a legitimate negative. That is what
-// makes saturation recoverable instead of absorbing.
+// A browsing session: mostly posts unrelated to anything labelled, with a real
+// keep every third. `gated` mirrors background.js -- the gate is on *hidden*,
+// not on high-scoring, which is what makes saturation recoverable.
 const browse = (m, amb, n, { seed = 0, gated = true } = {}) => {
   for (let k = 0; k < n; k++) {
     const s = seed + k;
@@ -143,18 +137,17 @@ test("ambient sightings satisfy the negative class", () => {
 });
 
 test("ambient browsing never squashes true hides below the threshold", () => {
-  // The failure fit() already warns about -- ranking stays perfect while every
-  // score drifts toward 0.5, so nothing clears 0.85 and the filter silently does
-  // nothing. Ambient pushes in exactly that direction and is never refit away,
-  // so it has to be swept: the damage is cumulative and a single N would miss it.
+  // The failure fit() warns about: ranking stays perfect while scores drift
+  // toward 0.5 and nothing clears 0.85. Ambient pushes that way and is never
+  // refit away, so it needs a sweep -- the damage is cumulative.
   const labels = [];
   for (let k = 0; k < 5; k++)
     for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });
   const amb = new Ambient();
   let m = fit(labels, amb);
 
-  // Refit on the sighting count as the extension does; without that this
-  // measures a state it is never actually in.
+  // Refit on the sighting count as the extension does, or this measures a state
+  // it is never in.
   const session = (n, seed) => {
     for (let k = 0; k < n; k += REFIT_EVERY) {
       browse(m, amb, Math.min(REFIT_EVERY, n - k), { seed: seed + k });
@@ -176,9 +169,8 @@ test("ambient browsing never squashes true hides below the threshold", () => {
 });
 
 test("a saturated model is recoverable rather than permanently dead", () => {
-  // Without the panic guard this is terminal: a one-class fit hides everything,
-  // every post is therefore hidden, the gate blocks every nudge, and nothing can
-  // push back. Reset would be the only exit, and it costs the whole label set.
+  // Without the panic guard this is terminal: everything hidden means every
+  // nudge gated, so nothing can push back and Reset is the only exit.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   const m = fit(onlyHides);
   const amb = new Ambient();
@@ -194,10 +186,9 @@ test("a saturated model is recoverable rather than permanently dead", () => {
 });
 
 test("ambient nudges self-extinguish once a region reads as keep", () => {
-  // The bound that makes thousands of one-class updates safe: the error is the
-  // *combined* score, so a region that already reads keep stops attracting
-  // weight. Taking the error from ambient's own z instead never settles -- it
-  // walks to the cap and drags the hides down with it.
+  // The bound that makes thousands of one-class updates safe. Take the error
+  // from ambient's own z instead and it never settles: it walks to the cap and
+  // drags the hides down with it.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   const m = fit(onlyHides);          // saturated, so this region starts at ~1.00
   const amb = new Ambient();
@@ -231,7 +222,7 @@ test("scores actually clear the default threshold, not just rank correctly", () 
   assert.ok(held.filter(l => !l.y).every(l => l.p < 0.85), "a true keep crossed the threshold");
 });
 
-// Three topics sitting in the same cone, the way a board's posts actually do.
+// Three topics sharing one cone, the way a board's posts do.
 const topics = () => {
   const out = [];
   for (let c = 0; c < 3; c++)
@@ -242,8 +233,8 @@ const topics = () => {
 
 const cos = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
 
-// Mean cosine within a topic minus mean cosine across topics. The bigger this
-// is, the more a neighbour-based layout has to work with.
+// Mean cosine within a topic minus mean cosine across them: what a
+// neighbour-based layout has to work with.
 const separation = (vs, items) => {
   let wi = 0, wn = 0, bi = 0, bn = 0;
   for (let a = 0; a < vs.length; a++)
@@ -265,8 +256,7 @@ test("map vectors separate topics that raw embeddings do not", () => {
 });
 
 test("without centering the cone swamps the topics", () => {
-  // The same failure test.js's header warns about, made load-bearing: uncentered,
-  // everything is ~0.8 to everything and a neighbour list is noise.
+  // Uncentered, everything is ~0.8 to everything and a neighbour list is noise.
   const items = topics();
   const raw = items.map(it => l2([...it.img, ...it.txt]));
   let lo = 1;
@@ -288,9 +278,7 @@ test("each mode admits exactly the posts that have its modality", () => {
 });
 
 test("a modality gap cannot form its own cluster, because it isn't on the map", () => {
-  // Imputing the missing block would only move which posts split off. A post
-  // with a hole is simply not on the map that would expose it, so there is no
-  // hole to cluster on and no imputation to get wrong.
+  // Imputing the missing block would only move which posts split off.
   for (const [gap, mode] of [["txt", "image"], ["img", "text"]]) {
     const items = topics();
     for (let i = 0; i < items.length; i += 3) items[i][gap] = ZERO;
@@ -298,8 +286,7 @@ test("a modality gap cannot form its own cluster, because it isn't on the map", 
     const on = items.filter(it => hasMode(it, mode));
     assert.equal(on.length, items.length, `${mode} mode should still take every post`);
 
-    // And separation on the surviving modality alone is real, not a side effect
-    // of the other one carrying it.
+    // And the surviving modality separates them on its own.
     const sep = separation(mapVectors(on, mode).vecs, on);
     assert.ok(sep > 0.2, `${mode} mode alone separated topics by only ${sep.toFixed(3)}`);
   }
@@ -313,10 +300,9 @@ test("single-modality modes are half as wide", () => {
 });
 
 test("a new post lands among its own topic, not in the middle", () => {
-  // The layout has to survive a reload, so newcomers are placed against stored
-  // coordinates rather than by refitting. Drift toward the centroid of
-  // everything turns the map back into a blob, slowly enough that the spatial
-  // memory it exists to build rots before anyone notices.
+  // Newcomers are placed against stored coordinates rather than by refitting.
+  // Drift toward the centroid of everything turns the map back into a blob,
+  // slowly enough that nobody notices until the layout is worthless.
   const items = topics();
   const { mu, vecs } = mapVectors(items, "both");
 
@@ -326,7 +312,7 @@ test("a new post lands among its own topic, not in the middle", () => {
 
   for (let c = 0; c < 3; c++) {
     const fresh = { img: jit(emb(10 + c), 500, 0.25), txt: jit(emb(20 + c), 577, 0.25) };
-    // Same mu the layout was built with -- that's what the second argument is for.
+    // The mu the layout was built with.
     const { vecs: [v] } = mapVectors([fresh], "both", mu);
     const [x, y] = placeNew(placed, v);
     const d = Math.hypot(x - corners[c][0], y - corners[c][1]);
@@ -349,8 +335,7 @@ test("lasso hit-testing handles concave shapes and edges", () => {
   assert.equal(inside(-1, 5, square), false);
   assert.equal(inside(5, 15, square), false);
 
-  // Concave is the whole reason for a lasso rather than a rectangle: you draw
-  // round the blob you can see, not round its bounding box.
+  // Concave is the whole reason for a lasso rather than a rectangle.
   const u = [[0, 0], [10, 0], [10, 10], [7, 10], [7, 3], [3, 3], [3, 10], [0, 10]];
   assert.equal(inside(5, 1, u), true, "inside the base of the U");
   assert.equal(inside(5, 6, u), false, "the notch is outside");
@@ -364,8 +349,7 @@ test("lasso hit-testing handles concave shapes and edges", () => {
 
 test("every URL shape for one post resolves to one identity", () => {
   // A thread URL carries a slug, so a pattern expecting #p straight after the id
-  // still matches with the fragment group empty -- and every reply in the thread
-  // collapses onto the OP, silently, with nothing in the log to say so.
+  // still matches with the fragment empty, collapsing every reply onto the OP.
   const op = "g/12345/12345";
   for (const [url, want] of [
     ["https://boards.4chan.org/g/thread/12345", op],                        // catalog
@@ -379,8 +363,8 @@ test("every URL shape for one post resolves to one identity", () => {
   assert.equal(identOf("https://boards.4chan.org/g/thread/12345/sqt#p12350").thread, 12345);
   assert.equal(identOf("https://boards.4chan.org/vg/thread/9#p9").board, "vg");
 
-  // No identity anywhere else, which is what keeps reddit out of the archive --
-  // and therefore out of ambient.
+  // No identity anywhere else, which keeps reddit out of the archive and so out
+  // of ambient.
   for (const u of ["https://old.reddit.com/r/g/comments/abc/x/", "", null, undefined])
     assert.equal(identOf(u), null, String(u));
 });

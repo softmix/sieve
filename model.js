@@ -7,10 +7,8 @@ const XS = Math.sqrt(K);
 
 export const ZERO = new Float32Array(K);
 
-// storage.local and runtime messaging both round-trip typed arrays differently
-// depending on the path, and a Float32Array can come back as a plain object with
-// numeric keys. Lives here because the map page needs it as much as the
-// background does.
+// A Float32Array can come back from storage or a message as a plain object with
+// numeric keys, depending on the path it took.
 export const toF32 = v => v instanceof Float32Array ? v
   : Float32Array.from(Array.isArray(v) ? v : Object.values(v));
 
@@ -49,8 +47,6 @@ export class Model {
     return { w: Array.from(this.w), b: this.b };
   }
 
-  // Public because scoring sums this with the ambient term below, and computing
-  // feats() once for both matters more than hiding a field.
   z(f) {
     let z = this.b;
     for (let i = 0; i < D; i++) z += this.w[i] * f[i];
@@ -63,8 +59,8 @@ export class Model {
     return sig(this.z(feats(img, txt)));
   }
 
-  // zOff is the ambient term's contribution, held fixed. These weights are then
-  // a *correction* on top of it rather than a competing opinion -- see fit().
+  // zOff is the ambient term's contribution, held fixed, so these weights come
+  // out as a correction on top of it rather than a competing opinion. See fit().
   learn(img, txt, y, lr = 0.5, decay = 1e-4, zOff = 0) {
     const f = feats(img, txt);
     const e = sig(this.z(f) + zOff) - y;
@@ -76,14 +72,10 @@ export class Model {
 
 export const sig = z => 1 / (1 + Math.exp(-z));
 
-// Archive identity. Not a model concern; it lives here because it needs a test
-// and this is the only file `node --test` can reach.
-//
-// 4chan gives the same post several URL shapes: the catalog links /g/thread/123,
-// the board index and thread pages link /g/thread/123/some-slug#p456, and a
-// thread's own OP links #p123. Keying on board/thread/post folds those together
-// so the OP is archived -- and nudged -- once rather than once per surface.
-// Anything else (reddit) has no identity here on purpose: no archive, no nudge.
+// 4chan gives one post several URL shapes -- /g/thread/123 from the catalog,
+// /g/thread/123/some-slug#p456 from the index, a bare #p123 from the thread
+// itself -- so identity is board/thread/post, or the same post is archived and
+// nudged once per surface. Anything without a match here (reddit) gets neither.
 const IDENT = /boards\.4chan\.org\/([^/]+)\/thread\/(\d+)(?:\/[^#]*)?(?:#p(\d+))?/;
 
 export const identOf = url => {
@@ -91,22 +83,17 @@ export const identOf = url => {
   return m ? { board: m[1], thread: +m[2], id: `${m[1]}/${m[2]}/${m[3] ?? m[2]}` } : null;
 };
 
-// One permanent step per post you scrolled past without hiding. It lives
-// outside the fitted weights because fit() rebuilds those from scratch on every
-// click and would erase anything learned online. A sum of two linear terms is
-// still linear: this is one model whose halves are maintained by two different
-// processes, one refit and one accumulated.
+// One permanent step per post scrolled past without hiding, kept outside the
+// fitted weights because fit() rebuilds those from scratch on every click.
 export const AMBIENT_LR = 0.02;
 
-// A wall to stand behind the argument. The gradient bound in nudge() says this
-// can't run away; ambient is also the only irreversible thing in the extension
-// -- never refit, never evicted, cleared only by Reset -- so a bug that beats
-// the argument costs the whole label set. Pinned by the sweep in test.js.
+// Ambient is never refit and never evicted, so a bug beating the gradient bound
+// in nudge() costs the whole label set. Pinned by the sweep in test.js.
 export const AMBIENT_CAP = 6;
 
-// Ambient drifts the combined score between clicks, and only a refit puts the
-// label weights back in step with it. Clicks alone are too rare -- you can
-// browse a whole board without one -- so refit on a sighting count too.
+// Ambient drifts the combined score between clicks and only a refit puts the
+// label weights back in step. Clicks are far too rare to rely on -- a whole
+// board can go by without one.
 export const REFIT_EVERY = 50;
 
 export class Ambient {
@@ -130,14 +117,12 @@ export class Ambient {
     return z;
   }
 
-  // y is always 0, and the error is taken against the *combined* score rather
-  // than this term alone. That's what makes thousands of one-class updates safe:
-  // once a region reads as keep, sig() of a very negative z is ~0 and further
-  // sightings move nothing. Self-extinguishing, not self-reinforcing.
+  // The error is the *combined* score, not this term alone, which is what makes
+  // thousands of one-class updates safe: once a region reads keep the gradient
+  // is ~0 and further sightings move nothing.
   //
-  // No decay, deliberately. It would shrink the weights on every sighting whose
-  // gradient has already vanished, fading a mark out exactly once the model has
-  // settled -- the opposite of permanent.
+  // No decay. It would shrink the weights on exactly those vanished-gradient
+  // sightings, fading a mark out once the model settles.
   nudge(f, zFit, lr = AMBIENT_LR) {
     const e = sig(this.z(f) + zFit);
     for (let i = 0; i < D; i++) this.w[i] -= lr * e * f[i];
@@ -156,7 +141,6 @@ export class Ambient {
   }
 }
 
-// The score everything outside this file should use: feats() once, both terms.
 export function score(fit, amb, img, txt) {
   const f = feats(img, txt);
   return sig(fit.z(f) + amb.z(f));
@@ -164,21 +148,15 @@ export function score(fit, amb, img, txt) {
 
 export const MIN_PER_CLASS = 3;
 
-// Sightings that stand in for the negative class. Browsing alone should get you
-// to a working filter: one catalog clears this, so it guards a fresh profile
-// with three angry clicks and nothing else rather than asking for a chore.
+// One catalog clears this, so it only guards a fresh profile with three angry
+// clicks and no other evidence.
 export const MIN_AMBIENT = 50;
 
-// Saturation is an *absorbing* state, and that is the whole reason this exists.
-// A one-class fit scores everything ~1.00; everything then sits above the
-// threshold; ambient only nudges what's below it, so nothing pushes back and
-// the extension is dead until Reset -- which throws away every label you
-// trained. Reachable in ordinary use: click ✗ often and ✓ rarely and the label
-// set goes all-positive while MIN_AMBIENT keeps filtering switched on.
-//
-// A model hiding essentially the entire page is broken, not strict. Stop
-// filtering, which puts every post back under the threshold and lets ambient
-// pull the model out on its own.
+// Without this, saturation is an absorbing state: a one-class fit scores
+// everything ~1.00, everything is therefore hidden, ambient only nudges what
+// isn't, nothing pushes back, and Reset is the only exit. Reachable by clicking
+// ✗ often and ✓ rarely. Hiding the whole page is broken rather than strict, so
+// stop filtering and let ambient climb back out.
 export const PANIC_RATE = 0.9;
 export const PANIC_WINDOW = 50;
 
@@ -188,10 +166,9 @@ export const counts = labels => {
   return { pos, neg };
 };
 
-// One-class training is degenerate, not just inaccurate: nothing counteracts the
-// bias, so it saturates and scores everything ~1.00. Callers must not filter
-// until this passes. Ambient sightings satisfy the negative side -- they are
-// real negative evidence, they just aren't stored as labels.
+// One-class training is degenerate, not merely inaccurate: nothing counteracts
+// the bias, so it saturates at ~1.00 on everything. Callers must not filter
+// until this passes. Ambient sightings count as the negative side.
 export const usable = (labels, ambient, hideRate = null) => {
   if (hideRate !== null && hideRate >= PANIC_RATE) return false;
   const { pos, neg } = counts(labels);
@@ -207,24 +184,16 @@ export const usable = (labels, ambient, hideRate = null) => {
 // silently does nothing. The "scores actually clear the default threshold" test
 // pins this; watch that rather than accuracy if you change them.
 //
-// Fitted *on top of* the ambient term, which is the only way the two stay
-// calibrated. CLIP embeddings are anisotropic, so ambient's accumulated weight
-// points largely along the cone that every post projects onto -- left to itself
-// it drags true hides down with everything else and the filter quietly dies.
-// Passing its contribution in as a fixed offset makes these weights the residual
-// instead: labels win where they exist, ambient generalises where they don't.
-// The sweep in test.js measures what happens without it.
-//
-// ponytail: O(labels * epochs) per click, over deliberate clicks only -- a few
-// hundred at most, so milliseconds.
+// Fitted on top of ambient, which is the only way the two stay calibrated. CLIP
+// embeddings are anisotropic, so ambient accumulates along the cone that every
+// post projects onto; without its contribution passed in as a fixed offset here,
+// it drags true hides down with everything else and the filter dies quietly.
 export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
-  // Constant through the fit, so pay for it once rather than per epoch.
-  const off = labels.map(l => ambient.z(feats(l.img, l.txt)));
-  // Class weights over sample weight rather than count. Without this a few hides
-  // lose to the pile of keeps and the model converges on hiding nothing. Clicks
-  // all carry w=1; imported sets may not, hence weight rather than count.
+  const off = labels.map(l => ambient.z(feats(l.img, l.txt)));   // fixed through the fit
+  // Class-balanced, or a few hides lose to the pile of keeps and the model
+  // converges on hiding nothing. By weight rather than count for imported sets.
   let wpos = 0, wneg = 0;
   for (const l of labels) l.y ? (wpos += l.w ?? 1) : (wneg += l.w ?? 1);
   const total = wpos + wneg;
@@ -244,35 +213,27 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
 
 export const MODES = ["both", "image", "text"];
 
-// Who belongs on a given map, and the whole answer to the gap problem. A post
-// lacking the modality being clustered on has a zero block after centering,
-// which makes it systematically less similar to everything that has one -- so it
-// lands in its own region however the hole is filled, and imputing it only moves
-// which posts that happens to.
-//
-// Keeping each mode to the posts that *have* its modality leaves no hole to
-// cluster on, and the means then need no special-casing either.
+// A post lacking the modality being clustered on has a zero block after
+// centering, which leaves it systematically less similar to everything that has
+// one, so it forms its own region however the hole is filled. Admitting only the
+// posts that have a mode's modality is what keeps that from happening.
 export const hasMode = (v, mode) => {
   const i = v.img.some(x => x !== 0), t = v.txt.some(x => x !== 0);
   return mode === "image" ? i : mode === "text" ? t : i && t;
 };
 
-// The vector the map clusters on: the mode's modalities, equally weighted and
-// centered. Callers must filter by hasMode() first -- a post with a gap here
-// silently reintroduces what the mode exists to avoid.
+// Callers must filter by hasMode() first, or the gap comes straight back.
 //
-// Not feats(). That interaction block earns its keep as a discriminative lift,
-// but as a *distance* it's a 4th-order term with no interpretation and it only
-// adds noise to a neighbourhood.
+// Not feats(): the interaction block is a discriminative lift, and as a distance
+// it's a 4th-order term with no interpretation that only adds noise.
 //
-// Centering is not optional: CLIP embeddings sit in a narrow cone, two unrelated
+// Centering is not optional. CLIP embeddings sit in a narrow cone, unrelated
 // images still at cosine ~0.8, so without it every neighbour list is dominated
-// by the mean direction and the layout is mush. The negative test in test.js
-// asserts exactly that failure.
+// by the mean direction and the layout is mush.
 //
-// Pass a `mu` back in to place new items onto an existing layout. The centering
-// mean has to be the one that layout was built with, or a newcomer is measured
-// from a different origin than its neighbours are.
+// Pass a `mu` back in to place items onto an existing layout: the mean has to be
+// the one that layout was built with, or a newcomer is measured from a different
+// origin than its neighbours.
 export function mapVectors(items, mode = "both", mu0 = null) {
   const useI = mode !== "text", useT = mode !== "image";
   const W = (useI ? K : 0) + (useT ? K : 0);
@@ -297,33 +258,24 @@ export function mapVectors(items, mode = "both", mu0 = null) {
   return { mu, vecs };
 }
 
-// Ray casting, for the map's lasso. Here rather than in map.js only because
-// this is the file `node --test` can reach, and the wrap-around index and the
-// strict-vs-loose comparison are both easy to get subtly wrong.
+// Ray casting, for the map's lasso.
 export function inside(px, py, poly) {
   let hit = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const [xi, yi] = poly[i], [xj, yj] = poly[j];
-    // The half-open `>` on one end and not the other is what stops a vertex
-    // lying exactly on the ray from being counted twice.
+    // Half-open on one end only, so a vertex on the ray isn't counted twice.
     if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) hit = !hit;
   }
   return hit;
 }
 
-// Out-of-sample placement: where does a newly archived post go on an existing
-// layout?
+// Where a newly archived post goes on an existing layout.
 //
-// umap-js's own transform() cannot answer this. It needs the rpForest and
-// searchGraph that fit() builds in memory, and neither survives a reload -- so
-// restoring a layout from stored coordinates would still mean refitting every
-// session, and the map would rearrange itself every time you opened it.
-//
-// What transform() does *before* its optimisation pass is initTransform: drop
-// the point at the weighted average of its neighbours' existing coordinates.
-// That needs nothing but the vectors and coordinates already on disk, and for
-// placing one post among thousands of known ones the refinement isn't worth
-// rebuilding the whole layout to get.
+// Not umap-js's transform(): it needs the rpForest and searchGraph that fit()
+// builds in memory, neither of which survives a reload, so using it would mean
+// refitting every session and a map that rearranges itself on every open. This
+// is its initTransform step -- the weighted average of a point's neighbours'
+// coordinates -- which needs only what's already on disk.
 export function placeNew(placed, vec, k = 8) {
   if (!placed.length) return [0, 0];
   const best = [];
@@ -336,10 +288,9 @@ export function placeNew(placed, vec, k = 8) {
       if (best.length > k) best.pop();
     }
   }
-  // Weight by rank, not by raw cosine. Even centered, neighbours of a CLIP point
-  // sit at similar similarities, so raw weights would be near-uniform and every
-  // newcomer would land in the middle of its neighbourhood's bounding box.
-  // Subtracting the k-th best makes the weights carry the ordering instead.
+  // Weight by rank, not raw cosine. Even centered, a CLIP point's neighbours sit
+  // at similar similarities, so raw weights are near-uniform and every newcomer
+  // lands in the middle of its neighbourhood's bounding box.
   const floor = best[best.length - 1].c;
   let wsum = 0, x = 0, y = 0;
   for (const b of best) {
@@ -351,11 +302,8 @@ export function placeNew(placed, vec, k = 8) {
   return [x / wsum, y / wsum];
 }
 
-// Every nth label held out, refit on the rest. Shown in the options page.
-//
-// Scored with the ambient term included, because that's what the extension
-// actually does. Every label here is a deliberate click, so the number measures
-// agreement with you rather than with the model's own automatic evidence.
+// Every nth label held out, refit on the rest, scored with ambient included
+// because that's what the extension does. Shown in the options page.
 export function holdout(labels, ambient = new Ambient(), frac = 0.2, opts) {
   const test = labels.filter((_, i) => i % Math.round(1 / frac) === 0);
   const train = labels.filter((_, i) => i % Math.round(1 / frac) !== 0);

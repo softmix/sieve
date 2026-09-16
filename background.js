@@ -55,10 +55,9 @@ const load = () => (engine ??= (async () => {
     console.log(`sieve: clip ready on ${backend}`);
     return { tok, proc, txt, vis };
   } catch (e) {
-    // Reported, not swallowed. This `try` covers a 303 MB download as well as
-    // the device probe, so a dropped fetch and a dead GPU arrive in the same
-    // `catch` -- and a network blip mistaken for a dead GPU silently switches
-    // geometry.
+    // This `try` covers a 303 MB download as well as the device probe, so a
+    // network blip and a dead GPU arrive in the same `catch`. Reported, not
+    // swallowed, because mistaking one for the other switches geometry.
     backend = `unavailable — ${e.message}`;
     // Retry the next time something needs embedding -- a failed download or a
     // lost device is worth another go. Only reaches here for failures after the
@@ -122,10 +121,9 @@ async function embedImages(srcs) {
     const hit = cache.img.get(src);
     if (hit) return void (out[i] = hit);
     try {
-      // fetch + fromBlob rather than RawImage.read, which does exactly this and
-      // then drops the encoded bytes. The archive wants them: 4chan deletes a
-      // thread's images within days, and a training map full of dead thumbnails
-      // is a training map you can't use. One fetch feeds both.
+      // fetch + fromBlob rather than RawImage.read, which does the same and
+      // discards the encoded bytes. The archive keeps them because 4chan deletes
+      // a thread's images within days. One fetch feeds both.
       const blob = await (await fetch(src)).blob();
       bytes[i] = new Uint8Array(await blob.arrayBuffer());
       raws[i] = await RawImage.fromBlob(blob);
@@ -185,8 +183,8 @@ let ambient = new Ambient();
 let labels = [];
 let scored = 0, spent = 0, queued = 0, fetched = 0;
 
-// Exact recall, in front of the model: an explicitly marked post is a stored
-// fact, so it stays hidden regardless of what the model currently thinks.
+// Exact recall, in front of the model: an explicitly marked post stays marked
+// regardless of what the model currently thinks.
 const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
 let taught = new Map(), taughtIds = new Map();
 
@@ -195,8 +193,8 @@ function reindex() {
   taughtIds = new Map();
   for (const l of labels) {
     if (l.key) taught.set(l.key, l.y);
-    // Archive identity too, so a decided post can be recognised in the archive
-    // without matching its truncated text against a key built from full text.
+    // By archive identity too: the archive truncates text, so its keys don't
+    // match ones built from the full text.
     const it = identOf(l.url);
     if (it) taughtIds.set(it.id, l.y);
   }
@@ -204,24 +202,18 @@ function reindex() {
 
 // ---- the archive ---------------------------------------------------------
 //
-// Every post seen, hidden or not, kept so the map has something to draw. It is
-// deliberately *not* a training set -- fit() never reads it. Feeding a hide back
-// as evidence would only confirm what the model already believes, and a store
-// the fitter cannot see makes that structural instead of a rule to remember.
-//
-// Eviction is cheap because the learning is banked into `ambient` at insert
-// time: losing a record costs the ability to look at it and nothing else.
+// Every post seen, hidden or not. Deliberately not a training set: fit() never
+// reads it, which makes "don't feed a hide back as evidence" structural rather
+// than a rule to remember.
 //
 // Vectors and thumbnails get their own storage keys so an insert is an O(1)
-// write. Only the small index is rewritten, and that's debounced.
+// write; only the small index is rewritten, debounced.
 let arc = [];                      // index: metadata only, no vectors
 let arcById = new Map();
 let arcNextId = 1;
 let unwritten = new Map();         // id -> {img, txt, thumb} not yet persisted
 
-// Rolling window behind usable()'s panic guard. A model hiding essentially the
-// whole page is broken rather than strict, and without this that state is
-// absorbing -- see the comment on PANIC_RATE.
+// Rolling window behind usable()'s panic guard -- see PANIC_RATE.
 let hideRing = [], hideCount = 0;
 const noteOutcome = hid => {
   hideRing.push(hid);
@@ -240,8 +232,8 @@ const evLine = ev => Object.entries(ev).map(([k, n]) => `${n} ${k}`).join(" + ")
 
 let threshold = 0.85;
 
-// Insert = archive + nudge, once per post. Not once per page view: the archive's
-// own dedupe is the ambient dedupe, so revisiting a catalog costs nothing.
+// Archive and nudge, once per post rather than once per page view: the archive's
+// dedupe is the ambient dedupe.
 function remember(e, item, hidden) {
   const it = identOf(item.url);
   if (!it) return;                    // reddit, or no permalink: no archive, no nudge
@@ -257,16 +249,13 @@ function remember(e, item, hidden) {
   unwritten.set(entry.n, { img: e.img, txt: e.txt, thumb: e.thumb });
   arcVec?.set(entry.n, { img: e.img, txt: e.txt });
 
-  // One permanent step, and only when the post was not actually hidden: pushing
-  // down something you asked it to catch would train against the catch. The gate
-  // is "was hidden", not "scored high" -- with filtering off nothing is hidden,
-  // so everything is a legitimate negative, and that is what lets a saturated
-  // model climb back out instead of staying dead until Reset.
+  // Only when the post wasn't actually hidden -- pushing down something you
+  // asked it to catch trains against the catch. The gate is "was hidden", not
+  // "scored high": with filtering off nothing is hidden, so everything counts,
+  // which is what lets a saturated model climb back out.
   if (!hidden) {
     const f = feats(e.img, e.txt);
     ambient.nudge(f, model.z(f));
-    // Ambient drifts the combined score between clicks and only a refit puts the
-    // label weights back in step. Clicks are far too rare to rely on.
     if (ambient.n % REFIT_EVERY === 0) refit();
   }
   soon();
@@ -280,9 +269,8 @@ const soon = () => {
   timer = setTimeout(flush, 5000);
 };
 
-// Archive, ambient and coordinates settle in batches. Losing a few sightings to
-// a crash costs nothing the model hasn't already absorbed, and rewriting the
-// index per post would not scale past a few hundred entries.
+// Batched: rewriting the index per post doesn't scale, and a crash costs only
+// records whose learning ambient has already absorbed.
 async function flush() {
   clearTimeout(timer);
   const w = { arc, arcNextId, ambient: ambient.toJSON() };
@@ -305,19 +293,15 @@ async function commit() {
 // against an origin that means something else.
 const LAYOUT_V = 3;
 
-// Which posts are on which map. Tested on the vector rather than on `e.img`,
-// because a thumbnail that failed to fetch leaves a url behind and a ZERO
-// embedding. Everything stays archived and still nudges whatever its modalities;
-// this only decides what gets drawn.
+// Tested on the vector, not on `e.img`: a thumbnail that failed to fetch leaves
+// a url behind and a ZERO embedding.
 const eligible = (vs, mode) => arc.filter(e => {
   const v = vs.get(e.n);
   return v && hasMode(v, mode);
 });
 
-// Archive vectors, loaded on demand rather than at boot. Nothing on the browsing
-// path needs them -- dedupe and pruning run off the index -- so the cost lands on
-// opening a view instead of on every browser start. Kept in memory afterwards,
-// which is what the persistent MV2 background page is for.
+// Loaded on demand, not at boot: nothing on the browsing path needs them, so the
+// cost lands on opening a view instead of on every browser start.
 let arcVec = null;
 async function vectors() {
   if (arcVec) return arcVec;
@@ -484,10 +468,9 @@ browser.runtime.onMessage.addListener(async msg => {
       return { ...counts(labels), ready: ready(), need: MIN_PER_CLASS };
     }
 
-    // Scores and label state for the map. Only this, not the vectors: the map is
-    // an extension page and can read storage.local itself, which beats pushing
-    // 12 MB through the message channel. flush() first so nothing it needs is
-    // still sitting in `unwritten`.
+    // Not the vectors: the map is an extension page and reads storage.local
+    // itself, which beats pushing 12 MB through the message channel. flush()
+    // first, so nothing it needs is still sitting in `unwritten`.
     case "mapState": {
       await flush();
       const vs = await vectors();
@@ -496,8 +479,6 @@ browser.runtime.onMessage.addListener(async msg => {
       for (const e of arc) {
         const v = vs.get(e.n);
         if (!v) continue;
-        // Which maps this post can appear on. The page filters per mode rather
-        // than asking again every time you switch.
         const maps = MODES.filter(m => hasMode(v, m));
         if (!maps.length) continue;
         mods[e.n] = maps;
@@ -508,10 +489,8 @@ browser.runtime.onMessage.addListener(async msg => {
       return { p, mark, mods, threshold, ready: on };
     }
 
-    // Coordinates for everything archived. New posts are placed against the
-    // stored layout rather than triggering a refit, which is what makes the map
-    // the same map every time you open it -- spatial memory is most of what a
-    // training tool is for, and a layout that rearranges itself has none.
+    // New posts are placed against the stored layout rather than triggering a
+    // refit, so the map is the same map every time you open it.
     case "coords": {
       const mode = msg.mode ?? "both";
       const s = await browser.storage.local.get({ layoutMu: {}, layoutV: 0 });
@@ -559,26 +538,21 @@ browser.runtime.onMessage.addListener(async msg => {
       return { ok: true };
     }
 
-    // "Open all the linux threads" -- the thing a lasso is for. Content scripts
-    // can't reach browser.tabs at all, and tabs.create needs no permission of
-    // its own, so a message is the whole of it.
+    // Content scripts can't reach browser.tabs; tabs.create needs no permission.
     case "openTabs": {
-      // A generous lasso over a dense region can hold hundreds of threads, and
-      // there's no undo for opening them.
+      // A generous lasso holds hundreds, and there's no undo for opening them.
       const urls = (msg.urls ?? []).slice(0, 40);
       for (const url of urls) await browser.tabs.create({ url, active: false });
       console.log(`sieve: opened ${urls.length} threads`);
       return { opened: urls.length, capped: (msg.urls?.length ?? 0) > urls.length };
     }
 
-    // Expired threads, pruned from the catalog's own membership list rather than
-    // by asking the server about 3000 posts. Runs on catalog visit, so the map
-    // can render purely from cached data.
+    // Expired threads, from the catalog's own membership rather than by asking
+    // the server about thousands of posts.
     case "prune": {
       const live = new Set(msg.threads);
       // 4chan's catalog search re-renders #threads with only the matches, and a
-      // snapshot taken after that would delete the entire board. The content
-      // script only sends its first scan; this is the second line of defence.
+      // snapshot taken after that would delete the entire board.
       if (live.size < 20) return { skipped: true };
       const drop = arc.filter(e =>
         e.board === msg.board && !live.has(e.thread) && !taughtIds.has(e.id));
@@ -621,8 +595,7 @@ browser.runtime.onMessage.addListener(async msg => {
     }
 
     case "reset": {
-      // Ambient is the only thing here that can't be undone any other way, so
-      // this has to clear it too or a Reset leaves the model half-trained by
+      // Ambient has to go too, or Reset leaves the model half-trained by
       // evidence whose records are gone.
       const keys = arc.flatMap(e => [`v${e.n}`, `t${e.n}`]);
       labels = [];

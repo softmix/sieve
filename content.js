@@ -42,12 +42,10 @@ async function run() {
   const pending = new Set();
   const seen = new WeakSet();
 
-  // Anything the archive holds for this board that isn't on the catalog has
-  // 404'd. Snapshot the *first* substantial render and only that one: 4chan's
-  // catalog search re-renders #threads with just the matches, and a snapshot
-  // taken after you've typed in it would look like the whole board had expired.
-  // The size floor also covers the catalog not having rendered yet at
-  // document_idle, and the background refuses implausibly small sets anyway.
+  // Anything the archive holds for this board and the catalog doesn't has 404'd.
+  // First substantial render only: 4chan's catalog search re-renders #threads
+  // with just the matches, and a snapshot taken after you've typed in it looks
+  // like the whole board expired. The floor also covers not-yet-rendered.
   let pruned = false;
   const prune = posts => {
     if (pruned || !site.catalog || posts.length < 20) return;
@@ -60,9 +58,8 @@ async function run() {
       browser.runtime.sendMessage({ type: "prune", board, threads }).catch(() => {});
   };
 
-  // The map, over the page. An iframe of the extension's own map page rather
-  // than a second renderer here: the inspect panel, labelling and re-layout come
-  // with it, and there's only one thing to keep working.
+  // An iframe of the extension's own map page rather than a second renderer
+  // here, so the inspect panel, labelling and re-layout all come with it.
   const ORIGIN = new URL(browser.runtime.getURL("map.html")).origin;
   let frame = null;
 
@@ -83,10 +80,8 @@ async function run() {
     if (e.origin === ORIGIN && e.data?.sieve === "close" && frame) toggleMap();
   });
 
-  // Beside the site's own advertise link where there is one, floating over the
-  // page where there isn't. Runs on every scan and the placement is idempotent,
-  // which is the only thing keeping the link alive on a page where something
-  // else re-renders the furniture underneath it.
+  // Runs on every scan, and the placement is idempotent -- which is the only
+  // thing keeping the link alive where something else re-renders the furniture.
   let said = null;
   const mapLink = () => {
     const make = () => {
@@ -98,19 +93,17 @@ async function run() {
       return a;
     };
 
-    // Reported whenever the picture changes. Placement can succeed into an
-    // element something else then re-renders, which looks exactly like never
-    // having run -- and `found` separates "no anchor on this page" from "anchor
-    // there, link still missing", which need different fixes.
+    // Placement can succeed into an element something else then re-renders,
+    // which looks exactly like never having run. `found` separates "no anchor
+    // here" from "anchor there, link still missing".
     const { found = 0, added = 0 } = site.nav?.(make) ?? {};
     const note = `${found} anchor(s), ${added} added`;
     if (found && note !== said) console.log(`sieve: map link — ${note}`);
     if (found) { said = note; return; }
     if (document.querySelector(".sieve-open")) return;
 
-    // No anchor on this page -- 4chan X's json-index rebuilds the chrome and may
-    // not carry one. A fixed element parented to <body> is owned by nothing else,
-    // so nothing else can take it away.
+    // 4chan X's json-index rebuilds the chrome and may carry no anchor at all.
+    // A fixed element parented to <body> can't be taken away.
     const a = make();
     a.textContent = "▦ sieve map";
     a.dataset.float = "";

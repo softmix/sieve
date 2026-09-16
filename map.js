@@ -1,22 +1,18 @@
 // The archive, laid out by UMAP and coloured by score.
 //
-// Two jobs, and only one of them is colour's. Hot regions are the undesired
-// clusters and the warm fringe around them is where a label moves the model
-// most -- that's the training half. Finding posts you'd otherwise have missed is
-// done by the *layout*: bump order scatters a topic across the catalog and this
-// gathers it. The score gradient contributes nothing to that, deliberately --
-// the model is trained on hide/keep, not on interest, so almost everything you'd
-// want to read scores low along with everything you wouldn't.
+// Colour serves training only: hot regions are the undesired clusters and the
+// warm fringe is where a label moves the model most. It says nothing about which
+// posts are worth reading -- the model is trained on hide/keep, not on interest,
+// so the good ones score low alongside the dull ones. Finding those is the
+// layout's job, which gathers a topic that bump order scattered.
 //
-// No k-means. UMAP's own normalisation handles the anisotropy (it subtracts each
-// point's nearest-neighbour distance, which is a local de-coning), and with no
-// per-cluster actions and no names there's nothing left for a hard partition to
-// do that the layout doesn't already do better.
+// No k-means: UMAP subtracts each point's nearest-neighbour distance when it
+// builds its graph, which is the local de-coning CLIP's anisotropy needs, and
+// with no per-cluster actions or names a hard partition adds nothing.
 import { mapVectors, toF32, identOf, inside } from "./model.js";
 
-// Same page, embedded over a catalog by the content script. The difference is
-// only emphasis: the posts on the board you're looking at stay lit and the rest
-// of your history dims behind them, so you see where today sits in it.
+// Embedded over a page by the content script. The only difference is emphasis:
+// that board's posts stay lit and the rest of the archive dims behind them.
 const OVERLAY = location.hash === "#overlay";
 
 // The UMD bundle assigns a *namespace* to the global, so the constructor sits
@@ -38,10 +34,9 @@ let hover = null, pinned = null;
 
 // ---- colour --------------------------------------------------------------
 
-// A two-stop ramp rather than a hue sweep. Sweeping 220deg to 10deg looks
-// prettier and ranks worse -- it runs through green and yellow, which read as
-// categories rather than as an ordering. This drops luminance as it goes, so it
-// survives greyscale and colour blindness.
+// Two stops rather than a hue sweep: a sweep runs through green and yellow,
+// which read as categories rather than as an ordering. Luminance drops along
+// with it, so it survives greyscale and colour blindness.
 const A = [110, 150, 210], B = [190, 45, 40];
 const fill = p => {
   const t = p < 0 ? 0 : p > 1 ? 1 : p;
@@ -82,14 +77,12 @@ function resize() {
 let here = null;    // ids of the posts on the page underneath, in overlay mode
 
 // Shift-drag rings a region. A lasso rather than a rectangle because the point
-// is to take the blob you can see, and blobs aren't rectangles -- that
-// flexibility is also the reason there's no k-means partition to select from.
+// is to take the blob you can see, and blobs aren't rectangles.
 let lasso = null;
 let sel = new Set();
 const SEL = "#00a0ff";
 
-// Posts, not threads: a lasso over a thread's replies selects the same thread
-// many times, and opening it once is what you meant.
+// A lasso over a thread's replies selects that thread many times; open it once.
 const threads = () => [...new Set([...sel].map(q => {
   const it = identOf(q.url);
   return it && `https://boards.4chan.org/${it.board}/thread/${it.thread}`;
@@ -120,8 +113,8 @@ function draw() {
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    // Rings are categorical on top of the continuous fill: what you decided,
-    // and what the filter is collapsing right now.
+    // Categorical, on top of the continuous fill: what you decided, and what the
+    // filter is collapsing right now.
     const ring = sel.has(q) ? SEL : RING[q.mark] ?? (q.hidden ? "#000" : null);
     if (!ring && q !== focused) continue;
     ctx.lineWidth = (q === focused || sel.has(q) ? 2.5 : 1.4) * d;
@@ -170,8 +163,7 @@ async function showFocus(q) {
 
   const img = document.createElement("img");
   img.alt = "";
-  // Stored bytes first -- 4chan deletes a thread's images within days, and the
-  // whole reason they're kept is that an old region of the map stays inspectable.
+  // Stored bytes first: 4chan deletes a thread's images within days.
   const got = await browser.storage.local.get(`t${q.n}`);
   const raw = got[`t${q.n}`];
   if (blobUrl) URL.revokeObjectURL(blobUrl);
@@ -252,8 +244,7 @@ cv.onmousedown = e => {
 
 addEventListener("mouseup", () => {
   if (lasso) {
-    // A shift-click with no drag means "clear", which beats a modifier nobody
-    // would guess.
+    // A shift-click with no drag clears.
     sel = new Set(lasso.length < 3 ? [] : pts.filter(q => inside(...toScreen(q), lasso)));
     lasso = null;
     showSel();
@@ -284,9 +275,8 @@ addEventListener("resize", resize);
 
 let live = [], items = [], mode = "both";
 
-// A full UMAP fit. Manual after the first one: placement drifts slowly, and you
-// notice it exactly when a new region looks wrong, which is the right moment to
-// be offered a button rather than having the map rearranged on every open.
+// Manual after the first one: placement drifts slowly, and you notice it exactly
+// when a new region looks wrong -- the right moment to be offered a button.
 async function relayout() {
   if (typeof Umap !== "function")
     throw new Error("vendor/umap.js exposed no UMAP constructor — did umap-js change its bundle?");
@@ -295,7 +285,7 @@ async function relayout() {
   const { mu, vecs } = mapVectors(items, mode);
   const umap = new Umap({
     // The default 15 is 10% of a small archive, which makes the local manifold
-    // estimate noise. Lower, and read the plot as suggestive rather than proof.
+    // estimate noise. Read the plot as suggestive rather than proof.
     nNeighbors: Math.max(2, Math.min(8, n - 1)),
     minDist: 0.15,
     nComponents: 2,
@@ -328,8 +318,7 @@ function settle(xy, note) {
   draw();
 }
 
-// The content script sends the board's post links once the frame has loaded.
-// It may arrive either side of boot() finishing, so apply whatever is ready.
+// Arrives either side of boot() finishing, so apply whatever is ready.
 addEventListener("message", e => {
   if (e.data?.sieve !== "here") return;
   here = new Set(e.data.urls.map(u => identOf(u)?.id).filter(Boolean));
@@ -342,9 +331,8 @@ addEventListener("message", e => {
 
 let st = null, arc = [], vecs = new Map();
 
-// Each mode is its own map with its own membership and its own layout. Switching
-// costs no inference at all -- both embeddings are already stored per post, and a
-// mode only changes which blocks go in.
+// Each mode is its own map, with its own membership and layout. Switching costs
+// no inference: both embeddings are stored, and a mode picks which blocks go in.
 async function show(note = "") {
   live = arc.filter(e => st.mods[e.n]?.includes(mode));
   if (live.length < 5) {

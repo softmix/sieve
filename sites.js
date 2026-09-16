@@ -11,33 +11,27 @@
 // catalog: this page lists *every* live thread on the board, so anything the
 //         archive holds for this board that isn't here has 404'd. That's how
 //         expired posts get pruned without asking the server about each one.
-// nav:    places the map link. Takes a factory rather than an element, because a
-//         page can carry more than one anchor and each wants its own. Returns
-//         {found, added}; nothing found and the caller floats the link over the
-//         page instead. Does the insertion itself because the right anchor is a
-//         per-site judgement, and it must be idempotent -- it runs on every scan,
+// nav:    places the map link and returns {found, added}; nothing found and the
+//         caller floats it over the page instead. Takes a factory because a page
+//         can carry several anchors. Must be idempotent: it runs on every scan,
 //         which is what puts the link back when something wipes it.
 // block:  give the badge its own line instead of floating it.
 // side:   "left" to float left.
 // image:  the thumbnail, deliberately -- already decoded in the page, and CLIP
 //         resizes to 224px anyway.
 
-// Shared by every 4chan page, because the map is a global tool and the board
-// index in 4chan X's json-index mode is a different entry from the catalog.
+// Shared by every 4chan entry: the map is a global tool, and 4chan X's
+// json-index mode renders the board index rather than the catalog.
 const FOURCHAN_NAV = make => {
-  // The path, not the host: the top link points at 4chan.org and the bottom one
-  // at 4channel.org. Not the link text either, which is the part that changes
-  // when they restyle. More appear as a page fills in, so this has to stay
-  // correct when called again with a longer list.
+  // The path, not the host -- the top link points at 4chan.org and the bottom at
+  // 4channel.org -- and not the text, which changes when they restyle.
   const ads = [...document.querySelectorAll('a[href*="/advertise"]')];
 
-  // Appended to the anchor's *parent* rather than placed after the anchor: the
-  // brackets around each link are text nodes either side of it, so inserting
-  // straight after lands between them -- "[Advertise on 4chan [sieve map]]".
+  // Appended to the anchor's parent, not placed after the anchor: the brackets
+  // around each link are text nodes either side of it, so inserting straight
+  // after renders "[Advertise on 4chan [sieve map]]".
   //
-  // Counted per parent rather than checked with a boolean, so two anchors
-  // sharing one container get one link each rather than the second being
-  // mistaken for already-done.
+  // Counted per parent, so two anchors sharing a container get one link each.
   let added = 0;
   for (const box of new Set(ads.map(a => a.parentElement).filter(Boolean))) {
     const want = ads.filter(a => a.parentElement === box).length;
