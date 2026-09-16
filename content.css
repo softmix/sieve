@@ -1,5 +1,5 @@
-/* The map, over the catalog. An iframe of the extension's own map page rather
-   than a second renderer in the content script: the panel, the labelling and the
+/* The map, over the page. An iframe of the extension's own map page rather than
+   a second renderer in the content script: the panel, the labelling and the
    re-layout button all come along for free. */
 #sieve-overlay {
   position: fixed;
@@ -12,8 +12,8 @@
   background: Canvas;
 }
 
-/* In the nav bar it inherits the surrounding link styling and just needs to be
-   clickable; `loose` is the fallback position above the thread grid. */
+/* Beside a nav anchor it inherits the surrounding link styling and only needs to
+   be clickable. */
 .sieve-open { cursor: pointer; }
 
 /* The fallback, for pages with no nav anchor to sit beside. Fixed and parented

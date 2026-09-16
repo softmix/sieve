@@ -56,8 +56,9 @@ const load = () => (engine ??= (async () => {
     return { tok, proc, txt, vis };
   } catch (e) {
     // Reported, not swallowed. This `try` covers a 303 MB download as well as
-    // the device probe, and a dropped fetch used to land in the same `catch` as
-    // a dead GPU -- which is how a network blip could silently switch geometry.
+    // the device probe, so a dropped fetch and a dead GPU arrive in the same
+    // `catch` -- and a network blip mistaken for a dead GPU silently switches
+    // geometry.
     backend = `unavailable — ${e.message}`;
     // Retry the next time something needs embedding -- a failed download or a
     // lost device is worth another go. Only reaches here for failures after the
@@ -208,9 +209,8 @@ function reindex() {
 // as evidence would only confirm what the model already believes, and a store
 // the fitter cannot see makes that structural instead of a rule to remember.
 //
-// Eviction is cheap for the same reason the old seen-pool's wasn't: the learning
-// was banked into `ambient` at insert time, so losing a record costs the ability
-// to look at it and nothing else.
+// Eviction is cheap because the learning is banked into `ambient` at insert
+// time: losing a record costs the ability to look at it and nothing else.
 //
 // Vectors and thumbnails get their own storage keys so an insert is an O(1)
 // write. Only the small index is rewritten, and that's debounced.
@@ -331,23 +331,22 @@ async function vectors() {
   return arcVec;
 }
 
-// One-time upgrade. The old seen-pool was both the archive and the negative
-// class at once, which is exactly why it had to stay capped at 300. Splitting
-// them means its records move to the archive and its *evidence* is replayed as
-// ambient -- the new semantics applied to old data, so the upgrade doesn't
-// quietly knock the negative class out of a model you spent weeks training.
+// Converts a label set written before the archive and ambient existed, where a
+// `src: "seen"` label carried both roles at once. Its record becomes an archive
+// entry and its evidence is replayed as one ambient step, so an upgrade doesn't
+// knock the negative class out of a model someone spent weeks training.
 function migrate(old) {
   const seen = old.filter(l => l.src === "seen");
   if (!seen.length) return old;
   const kept = old.filter(l => l.src !== "seen");
 
-  // Replay against the explicit-label fit, which is roughly the model that was
-  // in force when each was recorded.
+  // Replay against the explicit-label fit, which approximates the model in force
+  // when each was recorded.
   model = kept.length ? fit(kept, ambient) : new Model();
   for (const l of seen) {
     const it = identOf(l.url);
     if (it && !arcById.has(it.id)) {
-      // The old key packed the image url and the text together.
+      // These keys pack the image url and the text together.
       const i = (l.key ?? "").indexOf("\n");
       const entry = {
         n: arcNextId++, id: it.id, board: it.board, thread: it.thread, url: l.url,
@@ -356,9 +355,9 @@ function migrate(old) {
       };
       arc.push(entry);
       arcById.set(it.id, entry);
-      // No thumbnail bytes for these -- the fetch that would have kept them
-      // happened before there was anywhere to put them. They fall back to the
-      // url and go dark when 4chan deletes the thread, which pruning removes.
+      // No thumbnail bytes: these records predate anywhere to keep them. They
+      // fall back to the url and go dark once 4chan deletes the thread, which
+      // pruning then removes.
       unwritten.set(entry.n, { img: l.img, txt: l.txt });
     }
     const f = feats(l.img, l.txt);
@@ -436,7 +435,8 @@ browser.runtime.onMessage.addListener(async msg => {
     case "label": {
       const [e] = await embed([{ text: msg.text, img: msg.img }]);
       const key = keyOf(msg.text, msg.img);
-      // Replaces rather than stacks, including any weak "seen" entry.
+      // Replaces rather than stacks, so changing your mind about a post leaves
+      // one label rather than two that disagree.
       labels = labels.filter(l => l.key !== key);
       labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, url: msg.url, ev: EV, ts: Date.now() });
       reindex();

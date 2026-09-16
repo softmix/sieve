@@ -288,9 +288,9 @@ test("each mode admits exactly the posts that have its modality", () => {
 });
 
 test("a modality gap cannot form its own cluster, because it isn't on the map", () => {
-  // Imputing the missing block only moves which posts split off. A post with a
-  // hole is simply not on the map that would expose it, so there is no hole to
-  // cluster on and no imputation to get wrong.
+  // Imputing the missing block would only move which posts split off. A post
+  // with a hole is simply not on the map that would expose it, so there is no
+  // hole to cluster on and no imputation to get wrong.
   for (const [gap, mode] of [["txt", "image"], ["img", "text"]]) {
     const items = topics();
     for (let i = 0; i < items.length; i += 3) items[i][gap] = ZERO;

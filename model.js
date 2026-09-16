@@ -242,19 +242,6 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
   return m;
 }
 
-// The vector the map clusters on: both modalities, equally weighted, centered.
-//
-// Not feats(). That interaction block earns its keep as a discriminative lift,
-// but as a *distance* it's a 4th-order term with no interpretation, and it would
-// only add noise to a neighbourhood.
-//
-// Centering is not optional. CLIP embeddings sit in a narrow cone -- two
-// unrelated images still have cosine ~0.8 -- so without it every neighbour list
-// is dominated by the mean direction and the layout is mush. See the negative
-// test in test.js, which asserts exactly that failure.
-// Pass a `mu` back in to place new items onto an existing layout: the centering
-// mean must be the one that layout was built with, or a newcomer is measured
-// from a different origin than its neighbours were.
 export const MODES = ["both", "image", "text"];
 
 // Who belongs on a given map, and the whole answer to the gap problem. A post
@@ -270,8 +257,22 @@ export const hasMode = (v, mode) => {
   return mode === "image" ? i : mode === "text" ? t : i && t;
 };
 
-// Callers must have filtered by hasMode() first -- a post with a gap here would
-// silently reintroduce exactly what the mode exists to avoid.
+// The vector the map clusters on: the mode's modalities, equally weighted and
+// centered. Callers must filter by hasMode() first -- a post with a gap here
+// silently reintroduces what the mode exists to avoid.
+//
+// Not feats(). That interaction block earns its keep as a discriminative lift,
+// but as a *distance* it's a 4th-order term with no interpretation and it only
+// adds noise to a neighbourhood.
+//
+// Centering is not optional: CLIP embeddings sit in a narrow cone, two unrelated
+// images still at cosine ~0.8, so without it every neighbour list is dominated
+// by the mean direction and the layout is mush. The negative test in test.js
+// asserts exactly that failure.
+//
+// Pass a `mu` back in to place new items onto an existing layout. The centering
+// mean has to be the one that layout was built with, or a newcomer is measured
+// from a different origin than its neighbours are.
 export function mapVectors(items, mode = "both", mu0 = null) {
   const useI = mode !== "text", useT = mode !== "image";
   const W = (useI ? K : 0) + (useT ? K : 0);
@@ -353,8 +354,8 @@ export function placeNew(placed, vec, k = 8) {
 // Every nth label held out, refit on the rest. Shown in the options page.
 //
 // Scored with the ambient term included, because that's what the extension
-// actually does. Every label here is a deliberate click, so the number means
-// something rather than measuring how well it predicts its own weak negatives.
+// actually does. Every label here is a deliberate click, so the number measures
+// agreement with you rather than with the model's own automatic evidence.
 export function holdout(labels, ambient = new Ambient(), frac = 0.2, opts) {
   const test = labels.filter((_, i) => i % Math.round(1 / frac) === 0);
   const train = labels.filter((_, i) => i % Math.round(1 / frac) !== 0);

@@ -22,8 +22,8 @@ async function run() {
   // quotes, its own hide control) and a badge that round-trips through innerHTML
   // survives as markup with its handlers gone. badge() then finds it and hands it
   // back, so those controls are dead for good -- and a dead <button> inside
-  // 4chan's delform is a submit button, which is how clicking ✓ became a POST to
-  // the delete endpoint. A document listener can't be lost that way.
+  // 4chan's delform is a submit button, so clicking ✓ posts to the delete
+  // endpoint. A document listener can't be lost that way.
   // Capture, so the site's own click handlers don't get there first.
   addEventListener("click", e => {
     const b = e.target.closest?.(".sieve-tag > *");
@@ -60,7 +60,7 @@ async function run() {
       browser.runtime.sendMessage({ type: "prune", board, threads }).catch(() => {});
   };
 
-  // The map, over the catalog. An iframe of the extension's own map page rather
+  // The map, over the page. An iframe of the extension's own map page rather
   // than a second renderer here: the inspect panel, labelling and re-layout come
   // with it, and there's only one thing to keep working.
   const ORIGIN = new URL(browser.runtime.getURL("map.html")).origin;
