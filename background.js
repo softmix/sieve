@@ -202,6 +202,22 @@ function noteSeen(e, key, url) {
   soon();
 }
 
+// A hide leaves no label behind -- it's the model's own call, and feeding it back
+// as evidence would just confirm whatever it already believes. So keep the last
+// few in a ring for the options page to second-guess. Newest first, in memory
+// only: browsing refills it, and nothing here is worth a storage write.
+const RECENT_MAX = 60;
+let recent = [];
+
+function noteHidden(e, key, url) {
+  if (taught.has(key) || recent.some(r => r.key === key)) return;
+  recent.unshift({ img: e.img, txt: e.txt, key, url, ts: Date.now() });
+  recent.length = Math.min(recent.length, RECENT_MAX);
+  // The only window onto this list: it's memory-only, and "why is nothing in
+  // recently hidden" is otherwise unanswerable without a debugger.
+  console.log(`sieve: hid ${recent.length} so far, latest ${url || key.split("\n")[0] || "(no url)"}`);
+}
+
 // Implicit labels settle in batches; explicit clicks commit immediately.
 let timer = null;
 const soon = () => {
@@ -252,10 +268,14 @@ browser.runtime.onMessage.addListener(async msg => {
           const e = es[k];
           spent += e.ms;
           const p = model.score(e.img, e.txt);
-          // Only posts the model left alone: if it flagged one and you didn't
-          // correct it, a contradicting "fine" would train against the catch.
-          if (p <= threshold) noteSeen(e, keyOf(msg.items[i].text, msg.items[i].img), msg.items[i].url);
-          out[i] = { p, ready: usable(labels) };
+          const key = keyOf(msg.items[i].text, msg.items[i].img);
+          const ready = usable(labels);
+          // Only posts the model left alone become labels: if it flagged one and
+          // you didn't correct it, a contradicting "fine" would train against
+          // the catch. The flagged ones go in the ring instead.
+          if (p <= threshold) noteSeen(e, key, msg.items[i].url);
+          else if (ready) noteHidden(e, key, msg.items[i].url);
+          out[i] = { p, ready };
 
           if (++scored <= 5 || scored % 25 === 0)
             console.log(`sieve: ${scored} scored, ${e.ms | 0}ms/post in this batch of ${todo.length}`
@@ -293,10 +313,24 @@ browser.runtime.onMessage.addListener(async msg => {
         .map(s => ({ ...s, ...splitKey(s.key) }));
     }
 
-    // Promote a seen post in place, reusing its stored embeddings.
+    // Scored now rather than at hide time, so the list reflects what the model
+    // thinks after whatever you've already corrected.
+    case "recentHidden":
+      return recent
+        .filter(r => !taught.has(r.key))
+        .slice(0, msg.n ?? 12)
+        .map(r => ({ key: r.key, url: r.url, p: model.score(r.img, r.txt), ...splitKey(r.key) }));
+
+    // Promote a post in place, reusing its stored embeddings.
     case "relabel": {
-      const l = labels.find(x => x.key === msg.key);
-      if (!l) return { gone: true };
+      // A close call is already a label; a hidden post is only in the ring, so
+      // it has to be added rather than amended.
+      let l = labels.find(x => x.key === msg.key);
+      if (!l) {
+        l = recent.find(x => x.key === msg.key);
+        if (!l) return { gone: true };
+        labels.push(l);
+      }
       Object.assign(l, { y: msg.y, w: 1, src: msg.y ? "hide" : "keep", ts: Date.now() });
       reindex();
       await commit();
@@ -328,6 +362,7 @@ browser.runtime.onMessage.addListener(async msg => {
 
     case "reset":
       labels = [];
+      recent = [];
       model = new Model();
       reindex();   // else exact recall keeps hiding posts whose labels are gone
       await browser.storage.local.set({ labels });

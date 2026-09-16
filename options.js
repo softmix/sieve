@@ -40,18 +40,15 @@ async function stats() {
     + `${h}\nrunning on ${s.backend}`;
 }
 
-// ---- close calls ---------------------------------------------------------
+// ---- post lists ----------------------------------------------------------
 
-async function calls() {
-  const list = await send({ type: "closeCalls", n: 12 });
-  const ul = $("calls");
+async function fill(id, msg, empty) {
+  const list = await send(msg);
+  const ul = $(id);
   ul.replaceChildren();
 
   if (!list.length) {
-    ul.append(Object.assign(document.createElement("li"), {
-      className: "empty",
-      textContent: "Nothing yet — browse a page with the extension on and posts will collect here.",
-    }));
+    ul.append(Object.assign(document.createElement("li"), { className: "empty", textContent: empty }));
     return;
   }
 
@@ -95,7 +92,26 @@ async function calls() {
   }
 }
 
+const calls = () => fill("calls", { type: "closeCalls", n: 12 },
+  "Nothing yet — browse a page with the extension on and posts will collect here.");
+
+// Skipped while collapsed, so the closed section costs nothing.
+const recents = () => $("hidden-box").open
+  && fill("hidden", { type: "recentHidden", n: 12 }, "Nothing hidden since the browser started.");
+
 $("more").onclick = calls;
+$("more-hidden").onclick = recents;
+$("hidden-box").ontoggle = recents;
+
+// This page is a tab you leave open, and the interesting thing happens in the
+// *other* tab, so coming back is the moment the lists are stale. Not stats():
+// its holdout refit is ~340ms in the background page, which would stall scoring
+// on the page you just came from.
+document.onvisibilitychange = () => {
+  if (document.hidden) return;
+  calls();
+  recents();
+};
 
 // ---- data ----------------------------------------------------------------
 
@@ -124,6 +140,7 @@ $("file").onchange = async e => {
     : "Nothing importable in that file.";
   stats();
   calls();
+  recents();
 };
 
 $("reset").onclick = async () => {
@@ -131,6 +148,7 @@ $("reset").onclick = async () => {
   await send({ type: "reset" });
   stats();
   calls();
+  recents();
 };
 
 stats();

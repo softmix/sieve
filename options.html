@@ -5,7 +5,7 @@
   :root { color-scheme: light dark; }
   body { font: 14px/1.6 system-ui, sans-serif; max-width: 44em; margin: 2em auto; padding: 0 1em; }
   h1 { font-size: 1.4em; margin: 0 0 .2em; }
-  h2 { font-size: 1em; margin: 2em 0 .6em; opacity: .7; font-weight: 600; }
+  h2, summary.h2 { font-size: 1em; margin: 2em 0 .6em; opacity: .7; font-weight: 600; }
   code, .num { font-family: ui-monospace, monospace; }
 
   #stats { white-space: pre-wrap; opacity: .8; margin: 0; }
@@ -15,25 +15,26 @@
   input[type=number] { width: 6em; font: inherit; }
   .hint { opacity: .55; font-size: .85em; margin: .2em 0 0 0; }
 
-  /* close calls */
-  #calls { margin: 0; padding: 0; list-style: none; }
-  #calls li {
+  /* close calls, recently hidden */
+  .posts { margin: 0; padding: 0; list-style: none; }
+  .posts li {
     display: flex; align-items: center; gap: .8em;
     padding: .5em 0; border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
   }
-  #calls a.post {
+  .posts a.post {
     display: flex; align-items: center; gap: .8em; flex: 1; min-width: 0;
     color: inherit; text-decoration: none;
   }
-  #calls a.post:hover .txt { text-decoration: underline; }
-  #calls img { width: 120px; height: 120px; object-fit: contain; flex: 0 0 120px; background: #8882; }
-  #calls .txt {
+  .posts a.post:hover .txt { text-decoration: underline; }
+  .posts img { width: 120px; height: 120px; object-fit: contain; flex: 0 0 120px; background: #8882; }
+  .posts .txt {
     flex: 1; min-width: 0; max-height: 6em; overflow: hidden;
     font-size: .9em; opacity: .85; white-space: pre-wrap;
   }
-  #calls .num { flex: 0 0 3em; text-align: right; opacity: .7; }
+  .posts .num { flex: 0 0 3em; text-align: right; opacity: .7; }
   button { font: inherit; cursor: pointer; }
-  #calls button { padding: .1em .5em; }
+  .posts button { padding: .1em .5em; }
+  summary { cursor: pointer; }
   .warn { color: #c0392b; }
   .empty { opacity: .55; }
 </style>
@@ -67,8 +68,17 @@ clicked ✓ or ✗ are never pruned. Raising this costs refit time on every clic
 <h2>close calls</h2>
 <p class="hint">The posts the model is least sure about. Labelling these teaches it
 more than labelling anything else.</p>
-<ul id="calls"><li class="empty">…</li></ul>
+<ul id="calls" class="posts"><li class="empty">…</li></ul>
 <button id="more">refresh</button>
+
+<details id="hidden-box">
+  <summary class="h2">recently hidden</summary>
+  <p class="hint">What the filter actually collapsed, newest first, scored as the
+  model stands now. ✓ anything that was fine — that's a full-weight label, and the
+  fastest way to pull the threshold back off good posts.</p>
+  <ul id="hidden" class="posts"><li class="empty">…</li></ul>
+  <button id="more-hidden">refresh</button>
+</details>
 
 <h2>data</h2>
 <button id="export">export labels</button>
