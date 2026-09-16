@@ -106,19 +106,12 @@ const calls = () => fill("calls", { type: "closeCalls", n: 12 },
 const recents = () => $("hidden-box").open
   && fill("hidden", { type: "recentHidden", n: 12 }, "Nothing hidden since the browser started.");
 
+// Refreshed only when asked. Opening a post to look at it properly means leaving
+// and coming back, and rebuilding the list on return pulls the entry you went to
+// judge out from under you -- which is the one moment you were about to label it.
 $("more").onclick = calls;
 $("more-hidden").onclick = recents;
 $("hidden-box").ontoggle = recents;
-
-// This page is a tab you leave open, and the interesting thing happens in the
-// *other* tab, so coming back is the moment the lists are stale. Not stats():
-// its holdout refit is ~340ms in the background page, which would stall scoring
-// on the page you just came from.
-document.onvisibilitychange = () => {
-  if (document.hidden) return;
-  calls();
-  recents();
-};
 
 // ---- data ----------------------------------------------------------------
 
