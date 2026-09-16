@@ -42,22 +42,6 @@ async function run() {
   const pending = new Set();
   const seen = new WeakSet();
 
-  // Anything the archive holds for this board and the catalog doesn't has 404'd.
-  // First substantial render only: 4chan's catalog search re-renders #threads
-  // with just the matches, and a snapshot taken after you've typed in it looks
-  // like the whole board expired. The floor also covers not-yet-rendered.
-  let pruned = false;
-  const prune = posts => {
-    if (pruned || !site.catalog || posts.length < 20) return;
-    pruned = true;
-    const threads = posts
-      .map(p => +(/\/thread\/(\d+)/.exec(site.link?.(p) ?? "")?.[1] ?? 0))
-      .filter(Boolean);
-    const board = /^\/([^/]+)\//.exec(location.pathname)?.[1];
-    if (board && threads.length)
-      browser.runtime.sendMessage({ type: "prune", board, threads }).catch(() => {});
-  };
-
   // An iframe of the extension's own map page rather than a second renderer
   // here, so the inspect panel, labelling and re-layout all come with it.
   const ORIGIN = new URL(browser.runtime.getURL("map.html")).origin;
@@ -115,7 +99,6 @@ async function run() {
   const scan = () => {
     const before = pending.size;
     const posts = [...document.querySelectorAll(site.post)];
-    prune(posts);
     mapLink();
     for (const p of posts)
       if (!seen.has(p)) {

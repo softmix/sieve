@@ -70,10 +70,15 @@ that structural rather than a rule someone has to remember.
 
 Eviction is therefore cheap, which it wasn't when one pool did both jobs: the
 learning was banked into ambient at insert time, so losing a record costs the
-ability to *look* at it and nothing else. Expired threads are pruned from the
-catalog's own membership list rather than by asking the server about each of
-thousands of posts. Thumbnail bytes are kept because 4chan deletes a thread's
-images within days and a training map full of dead thumbnails is not one.
+ability to *look* at it and nothing else. Expired threads are pruned against
+`a.4cdn.org/<board>/threads.json`, one small request per board in the archive
+rather than one per post, before any of the three views renders. That list used
+to be scraped off the catalog page instead, which tied eviction to the board you
+happened to have open *and* to 4chan drawing it — under 4chan X the thread list
+arrives on the board index, a different `sites.js` entry, so nothing ran and the
+map filled up with 404s. Thumbnail bytes are kept because 4chan deletes a
+thread's images within days and a training map full of dead thumbnails is not
+one.
 
 The map (`map.html`) lays that archive out with UMAP and colours it by score.
 Two jobs, and only one of them is colour's:
@@ -248,8 +253,7 @@ matching pattern in `manifest.json`'s `content_scripts.matches`. Nothing enforce
 that pairing; if a new site does nothing at all, that's the first thing to check.
 The model is shared across every site — only the scraping differs.
 
-`catalog: true` means the page lists *every* live thread on the board, which is
-what makes pruning possible. The archive is 4chan-only, and `identOf()` is that
+The archive is 4chan-only, and `identOf()` is that
 rule: no identity means no archive entry, and since insert is the ambient
 trigger, it also means no nudge. So reddit contributes only deliberate clicks and
 never silently shifts a /g/-tuned model with its very different content.

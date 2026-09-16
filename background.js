@@ -288,6 +288,53 @@ async function commit() {
   await browser.storage.local.set({ labels });
 }
 
+// Drop what 4chan has expired, one small request per board rather than one per
+// post. From the API and not from a catalog page: liveness scraped out of the
+// DOM only ever covered the board you happened to have open, and only when
+// 4chan's own markup drew it -- under 4chan X the thread list arrives on the
+// board index, a different sites.js entry, so nothing ran at all.
+//
+// Labelled posts stay: they're the training set, and their thumbnail bytes are
+// the only copy left once the thread goes.
+let lastPrune = 0;
+async function pruneExpired() {
+  if (Date.now() - lastPrune < 6e5) return;   // the options page refreshes its lists on every focus
+  lastPrune = Date.now();
+
+  const boards = [...new Set(arc.map(e => e.board))];
+  let dropped = 0, asked = 0;
+  for (const board of boards) {
+    let live;
+    try {
+      const pages = await (await fetch(`https://a.4cdn.org/${board}/threads.json`)).json();
+      live = new Set(pages.flatMap(p => p.threads).map(t => t.no));
+    } catch (e) {
+      // Reported, not swallowed. A prune that quietly stops running looks exactly
+      // like a prune with nothing to do, which is how this went unnoticed before.
+      console.warn(`sieve: no live thread list for /${board}/ (${e.message}) — not pruning it`);
+      continue;
+    }
+    if (!live.size) continue;
+    asked++;
+
+    const drop = arc.filter(e =>
+      e.board === board && !live.has(e.thread) && !taughtIds.has(e.id));
+    if (!drop.length) continue;
+
+    const gone = new Set(drop.map(e => e.id));
+    arc = arc.filter(e => !gone.has(e.id));
+    for (const e of drop) {
+      arcById.delete(e.id);
+      arcVec?.delete(e.n);
+      unwritten.delete(e.n);
+    }
+    await browser.storage.local.remove(drop.flatMap(e => [`v${e.n}`, `t${e.n}`]));
+    await flush();
+    dropped += drop.length;
+  }
+  console.log(`sieve: pruned ${dropped} expired posts across ${asked}/${boards.length} board(s)`);
+}
+
 // A stored centering mean is only meaningful to the mapVectors() that produced
 // it. Bump this whenever that function's shape changes, or new posts get placed
 // against an origin that means something else.
@@ -378,6 +425,11 @@ const booted = (async () => {
     console.warn(`sieve: labels span ${evLine(ev)} — vectors from different backends are not comparable`);
 })();
 
+// After boot rather than inside it: every message handler awaits `booted`, and a
+// browser start shouldn't hold the first page's scoring behind a network round
+// trip per board.
+booted.then(pruneExpired);
+
 browser.storage.onChanged.addListener(c => {
   if (c.threshold) threshold = c.threshold.newValue;
 });
@@ -441,6 +493,7 @@ browser.runtime.onMessage.addListener(async msg => {
     // by proximity to 0.5, or everything the filter would collapse right now.
     case "closeCalls":
     case "recentHidden": {
+      await pruneExpired();
       const vs = await vectors();
       const near = msg.type === "closeCalls";
       return arc
@@ -472,6 +525,7 @@ browser.runtime.onMessage.addListener(async msg => {
     // itself, which beats pushing 12 MB through the message channel. flush()
     // first, so nothing it needs is still sitting in `unwritten`.
     case "mapState": {
+      await pruneExpired();
       await flush();
       const vs = await vectors();
       const on = ready();
@@ -547,29 +601,6 @@ browser.runtime.onMessage.addListener(async msg => {
       return { opened: urls.length, capped: (msg.urls?.length ?? 0) > urls.length };
     }
 
-    // Expired threads, from the catalog's own membership rather than by asking
-    // the server about thousands of posts.
-    case "prune": {
-      const live = new Set(msg.threads);
-      // 4chan's catalog search re-renders #threads with only the matches, and a
-      // snapshot taken after that would delete the entire board.
-      if (live.size < 20) return { skipped: true };
-      const drop = arc.filter(e =>
-        e.board === msg.board && !live.has(e.thread) && !taughtIds.has(e.id));
-      if (!drop.length) return { dropped: 0 };
-
-      const gone = new Set(drop.map(e => e.id));
-      arc = arc.filter(e => !gone.has(e.id));
-      for (const e of drop) {
-        arcById.delete(e.id);
-        arcVec?.delete(e.n);
-        unwritten.delete(e.n);
-      }
-      await browser.storage.local.remove(drop.flatMap(e => [`v${e.n}`, `t${e.n}`]));
-      await flush();
-      console.log(`sieve: pruned ${drop.length} expired posts from /${msg.board}/`);
-      return { dropped: drop.length };
-    }
     case "export":
       // Everything needed to rebuild the model elsewhere.
       return labels.map(l => ({
