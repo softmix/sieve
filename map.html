@@ -21,6 +21,9 @@
   header h1 { font-size: 1em; margin: 0; font-weight: 600; }
   #status { opacity: .65; }
   .spacer { flex: 1; }
+  .hint { opacity: .45; }
+  #selbar { display: flex; align-items: center; gap: .6em; }
+  #selcount { color: #00a0ff; }
 
   /* The canvas is sized to its box in JS; without min-width:0 the grid column
      refuses to shrink and it grows on every resize. */
@@ -53,7 +56,13 @@
 <header>
   <h1>sieve map</h1>
   <span id="status">…</span>
+  <span id="selbar" hidden>
+    <span id="selcount"></span>
+    <button id="opentabs"></button>
+    <button id="clearsel">clear</button>
+  </span>
   <span class="spacer"></span>
+  <span class="hint">shift-drag to lasso</span>
   <button id="refit" hidden>re-lay out</button>
   <button id="close" hidden>close (esc)</button>
 </header>

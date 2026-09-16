@@ -12,7 +12,7 @@
 // point's nearest-neighbour distance, which is a local de-coning), and with no
 // per-cluster actions and no names there's nothing left for a hard partition to
 // do that the layout doesn't already do better.
-import { mapVectors, toF32, identOf } from "./model.js";
+import { mapVectors, toF32, identOf, inside } from "./model.js";
 
 // Same page, embedded over a catalog by the content script. The difference is
 // only emphasis: the posts on the board you're looking at stay lit and the rest
@@ -81,6 +81,28 @@ function resize() {
 
 let here = null;    // ids of the posts on the page underneath, in overlay mode
 
+// Shift-drag rings a region. A lasso rather than a rectangle because the point
+// is to take the blob you can see, and blobs aren't rectangles -- that
+// flexibility is also the reason there's no k-means partition to select from.
+let lasso = null;
+let sel = new Set();
+const SEL = "#00a0ff";
+
+// Posts, not threads: a lasso over a thread's replies selects the same thread
+// many times, and opening it once is what you meant.
+const threads = () => [...new Set([...sel].map(q => {
+  const it = identOf(q.url);
+  return it && `https://boards.4chan.org/${it.board}/thread/${it.thread}`;
+}).filter(Boolean))];
+
+function showSel() {
+  const t = threads().length;
+  $("selbar").hidden = !sel.size;
+  $("selcount").textContent = `${sel.size} selected — ${t} thread${t === 1 ? "" : "s"}`;
+  $("opentabs").textContent = `open ${t} in tabs`;
+  $("opentabs").disabled = !t;
+}
+
 function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   const d = devicePixelRatio || 1;
@@ -100,13 +122,25 @@ function draw() {
 
     // Rings are categorical on top of the continuous fill: what you decided,
     // and what the filter is collapsing right now.
-    const ring = RING[q.mark] ?? (q.hidden ? "#000" : null);
+    const ring = sel.has(q) ? SEL : RING[q.mark] ?? (q.hidden ? "#000" : null);
     if (!ring && q !== focused) continue;
-    ctx.lineWidth = (q === focused ? 2.5 : 1.4) * d;
+    ctx.lineWidth = (q === focused || sel.has(q) ? 2.5 : 1.4) * d;
     ctx.strokeStyle = q === focused ? INK : ring;
-    ctx.globalAlpha = q === focused ? 1 : 0.55;
+    ctx.globalAlpha = q === focused || sel.has(q) ? 1 : 0.55;
     ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+
+  if (lasso?.length > 1) {
+    ctx.beginPath();
+    ctx.moveTo(lasso[0][0], lasso[0][1]);
+    for (const [x, y] of lasso.slice(1)) ctx.lineTo(x, y);
+    ctx.closePath();
+    ctx.strokeStyle = SEL;
+    ctx.lineWidth = 1.5 * d;
+    ctx.setLineDash([5 * d, 4 * d]);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 }
 
@@ -183,7 +217,17 @@ async function showFocus(q) {
 
 // ---- interaction ---------------------------------------------------------
 
+const canvasXY = e => {
+  const r = cv.getBoundingClientRect();
+  const d = devicePixelRatio || 1;
+  return [(e.clientX - r.left) * d, (e.clientY - r.top) * d];
+};
+
 cv.onmousemove = e => {
+  if (lasso) {
+    lasso.push(canvasXY(e));
+    return draw();
+  }
   if (drag) {
     const d = devicePixelRatio || 1;
     view.x -= (e.clientX - drag.x) * d / view.k;
@@ -200,8 +244,21 @@ cv.onmousemove = e => {
 };
 
 let drag = null;
-cv.onmousedown = e => { drag = { x: e.clientX, y: e.clientY }; cv.classList.add("drag"); };
+cv.onmousedown = e => {
+  if (e.shiftKey) { lasso = [canvasXY(e)]; return; }
+  drag = { x: e.clientX, y: e.clientY };
+  cv.classList.add("drag");
+};
+
 addEventListener("mouseup", () => {
+  if (lasso) {
+    // A shift-click with no drag means "clear", which beats a modifier nobody
+    // would guess.
+    sel = new Set(lasso.length < 3 ? [] : pts.filter(q => inside(...toScreen(q), lasso)));
+    lasso = null;
+    showSel();
+    return draw();
+  }
   // A drag that never moved is a click, and a click pins whatever is under it.
   if (drag && !drag.moved) { pinned = hover; showFocus(pinned); draw(); }
   drag = null;
@@ -302,6 +359,15 @@ async function boot() {
   const c = await send({ type: "coords" });
   const xy = c.needLayout ? await relayout() : c.xy;
   settle(xy, c.placed ? `${c.placed} newly placed` : "");
+
+  $("opentabs").onclick = async () => {
+    const urls = threads();
+    $("opentabs").disabled = true;
+    const r = await send({ type: "openTabs", urls });
+    say(r.capped ? `opened ${r.opened} — capped, lasso fewer` : `opened ${r.opened} threads`);
+    $("opentabs").disabled = false;
+  };
+  $("clearsel").onclick = () => { sel = new Set(); showSel(); draw(); };
 
   $("refit").hidden = false;
   $("refit").onclick = async () => {

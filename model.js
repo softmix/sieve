@@ -290,6 +290,20 @@ export function mapVectors(items, mu0 = null) {
   return { mu, vecs };
 }
 
+// Ray casting, for the map's lasso. Here rather than in map.js only because
+// this is the file `node --test` can reach, and the wrap-around index and the
+// strict-vs-loose comparison are both easy to get subtly wrong.
+export function inside(px, py, poly) {
+  let hit = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    // The half-open `>` on one end and not the other is what stops a vertex
+    // lying exactly on the ray from being counted twice.
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) hit = !hit;
+  }
+  return hit;
+}
+
 // Out-of-sample placement: where does a newly archived post go on an existing
 // layout?
 //

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, placeNew, identOf,
+  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, placeNew, identOf, inside,
   Ambient, AMBIENT_CAP, MIN_AMBIENT, PANIC_RATE, REFIT_EVERY,
 } from "./model.js";
 
@@ -339,6 +339,26 @@ test("a new post lands among its own topic, not in the middle", () => {
 test("placing against an empty layout does not explode", () => {
   const { vecs } = mapVectors(topics());
   assert.deepEqual(placeNew([], vecs[0]), [0, 0]);
+});
+
+test("lasso hit-testing handles concave shapes and edges", () => {
+  const square = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  assert.equal(inside(5, 5, square), true);
+  assert.equal(inside(15, 5, square), false);
+  assert.equal(inside(-1, 5, square), false);
+  assert.equal(inside(5, 15, square), false);
+
+  // Concave is the whole reason for a lasso rather than a rectangle: you draw
+  // round the blob you can see, not round its bounding box.
+  const u = [[0, 0], [10, 0], [10, 10], [7, 10], [7, 3], [3, 3], [3, 10], [0, 10]];
+  assert.equal(inside(5, 1, u), true, "inside the base of the U");
+  assert.equal(inside(5, 6, u), false, "the notch is outside");
+  assert.equal(inside(8, 6, u), true, "the right arm is inside");
+  assert.equal(inside(1, 6, u), true, "the left arm is inside");
+
+  // A horizontal ray leaving a vertex must not be counted from both edges.
+  assert.equal(inside(5, 0, square) !== inside(5, 10, square), true,
+    "a vertex-level ray was double-counted");
 });
 
 test("every URL shape for one post resolves to one identity", () => {

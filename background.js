@@ -548,6 +548,18 @@ browser.runtime.onMessage.addListener(async msg => {
       return { ok: true };
     }
 
+    // "Open all the linux threads" -- the thing a lasso is for. Content scripts
+    // can't reach browser.tabs at all, and tabs.create needs no permission of its
+    // own, so this is the whole cost of it.
+    case "openTabs": {
+      // A generous lasso over a dense region can hold hundreds of threads, and
+      // there's no undo for opening them.
+      const urls = (msg.urls ?? []).slice(0, 40);
+      for (const url of urls) await browser.tabs.create({ url, active: false });
+      console.log(`sieve: opened ${urls.length} threads`);
+      return { opened: urls.length, capped: (msg.urls?.length ?? 0) > urls.length };
+    }
+
     // Expired threads, pruned from the catalog's own membership list rather than
     // by asking the server about 3000 posts. Runs on catalog visit, so the map
     // can render purely from cached data.
