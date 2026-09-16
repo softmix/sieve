@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, placeNew, identOf, inside,
+  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, placeNew, identOf, inside, MODES, hasMode,
   Ambient, AMBIENT_CAP, MIN_AMBIENT, PANIC_RATE, REFIT_EVERY,
 } from "./model.js";
 
@@ -257,7 +257,7 @@ const separation = (vs, items) => {
 test("map vectors separate topics that raw embeddings do not", () => {
   const items = topics();
   const raw = items.map(it => l2([...it.img, ...it.txt]));
-  const sep = separation(mapVectors(items).vecs, items);
+  const sep = separation(mapVectors(items, "both").vecs, items);
   const rawSep = separation(raw, items);
   assert.ok(sep > rawSep * 2,
     `centering barely helped: ${rawSep.toFixed(3)} -> ${sep.toFixed(3)}`);
@@ -275,40 +275,42 @@ test("without centering the cone swamps the topics", () => {
   assert.ok(lo > 0.6, `uncentered vectors should all be crowded together, floor was ${lo.toFixed(3)}`);
 });
 
-test("a post missing one modality does not cluster on the hole", () => {
-  // Symmetric, because the asymmetric version shipped and was visible on the
-  // first real archive with thread replies in it: text-only posts split off into
-  // their own territory, and the image clusters got *worse* at the same time --
-  // the image mean was being divided by every post while only some contributed,
-  // so the centering was under-applied and the cone crept back.
-  for (const gap of ["txt", "img"]) {
-    const items = topics();
-    const mute = [0, 12, 24];   // one per topic, so a wrong answer is unambiguous
-    for (const i of mute) items[i][gap] = ZERO;
-    const vs = mapVectors(items).vecs;
+test("each mode admits exactly the posts that have its modality", () => {
+  const both = { img: emb(1), txt: emb(2) };
+  const pic = { img: emb(1), txt: ZERO };
+  const words = { img: ZERO, txt: emb(2) };
+  const neither = { img: ZERO, txt: ZERO };
 
-    for (const i of mute) {
-      const own = vs.map((v, j) => ({ j, c: cos(vs[i], v) }))
-        .filter(x => x.j !== i)
-        .sort((a, b) => b.c - a.c)[0];
-      assert.equal(items[own.j].topic, items[i].topic,
-        `with no ${gap}, nearest neighbour was topic ${items[own.j].topic}, not its own`);
-    }
+  assert.deepEqual(MODES.map(m => hasMode(both, m)), [true, true, true]);
+  assert.deepEqual(MODES.map(m => hasMode(pic, m)), [false, true, false]);
+  assert.deepEqual(MODES.map(m => hasMode(words, m)), [false, false, true]);
+  assert.deepEqual(MODES.map(m => hasMode(neither, m)), [false, false, false]);
+});
+
+test("a modality gap cannot form its own cluster, because it isn't on the map", () => {
+  // The lesson from two rounds of this on real data. Imputing the missing block
+  // hid half the problem -- text-only posts stopped splitting off and image-only
+  // posts started. A post with a hole is simply not on the map that would expose
+  // it, so there is no hole to cluster on and no imputation to get wrong.
+  for (const [gap, mode] of [["txt", "image"], ["img", "text"]]) {
+    const items = topics();
+    for (let i = 0; i < items.length; i += 3) items[i][gap] = ZERO;
+
+    const on = items.filter(it => hasMode(it, mode));
+    assert.equal(on.length, items.length, `${mode} mode should still take every post`);
+
+    // And separation on the surviving modality alone is real, not a side effect
+    // of the other one carrying it.
+    const sep = separation(mapVectors(on, mode).vecs, on);
+    assert.ok(sep > 0.2, `${mode} mode alone separated topics by only ${sep.toFixed(3)}`);
   }
 });
 
-test("a modality gap does not weaken centering for everyone else", () => {
-  const whole = topics();
-  const gappy = topics();
-  for (let i = 0; i < gappy.length; i += 3) gappy[i].img = ZERO;   // a third have no image
-
-  // Topic separation among the *intact* posts must survive the others' gaps.
-  const keep = gappy.map((it, i) => i % 3 !== 0);
-  const a = mapVectors(whole).vecs.filter((_, i) => keep[i]);
-  const b = mapVectors(gappy).vecs.filter((_, i) => keep[i]);
-  const items = whole.filter((_, i) => keep[i]);
-  const [sa, sb] = [separation(a, items), separation(b, items)];
-  assert.ok(sb > sa * 0.8, `gaps cost the intact posts their separation: ${sa.toFixed(3)} -> ${sb.toFixed(3)}`);
+test("single-modality modes are half as wide", () => {
+  const items = topics();
+  assert.equal(mapVectors(items, "both").vecs[0].length, 2 * K);
+  assert.equal(mapVectors(items, "image").vecs[0].length, K);
+  assert.equal(mapVectors(items, "text").vecs[0].length, K);
 });
 
 test("a new post lands among its own topic, not in the middle", () => {
@@ -317,7 +319,7 @@ test("a new post lands among its own topic, not in the middle", () => {
   // everything, the map slowly turns into a blob and nobody notices until the
   // spatial memory it exists to build has already rotted.
   const items = topics();
-  const { mu, vecs } = mapVectors(items);
+  const { mu, vecs } = mapVectors(items, "both");
 
   // Stand-in layout: each topic parked in its own corner.
   const corners = [[-10, -10], [10, -10], [0, 10]];
@@ -326,7 +328,7 @@ test("a new post lands among its own topic, not in the middle", () => {
   for (let c = 0; c < 3; c++) {
     const fresh = { img: jit(emb(10 + c), 500, 0.25), txt: jit(emb(20 + c), 577, 0.25) };
     // Same mu the layout was built with -- that's what the second argument is for.
-    const { vecs: [v] } = mapVectors([fresh], mu);
+    const { vecs: [v] } = mapVectors([fresh], "both", mu);
     const [x, y] = placeNew(placed, v);
     const d = Math.hypot(x - corners[c][0], y - corners[c][1]);
     const other = Math.min(...corners.filter((_, j) => j !== c)
@@ -337,7 +339,7 @@ test("a new post lands among its own topic, not in the middle", () => {
 });
 
 test("placing against an empty layout does not explode", () => {
-  const { vecs } = mapVectors(topics());
+  const { vecs } = mapVectors(topics(), "both");
   assert.deepEqual(placeNew([], vecs[0]), [0, 0]);
 });
 

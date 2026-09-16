@@ -282,7 +282,7 @@ addEventListener("resize", resize);
 
 // ---- boot ----------------------------------------------------------------
 
-let live = [], items = [];
+let live = [], items = [], mode = "both";
 
 // A full UMAP fit. Deliberately manual after the first one: placement drifts
 // slowly, and you notice it exactly when a new region looks wrong -- which is
@@ -293,7 +293,7 @@ async function relayout() {
     throw new Error("vendor/umap.js exposed no UMAP constructor — did umap-js change its bundle?");
 
   const n = items.length;
-  const { mu, vecs } = mapVectors(items);
+  const { mu, vecs } = mapVectors(items, mode);
   const umap = new Umap({
     // The default 15 is 10% of a small archive, which makes the local manifold
     // estimate noise. Lower, and read the plot as suggestive rather than proof.
@@ -307,7 +307,7 @@ async function relayout() {
   });
 
   const xy = Object.fromEntries(live.map((e, i) => [e.n, coords[i]]));
-  await send({ type: "saveLayout", xy, mu: Array.from(mu) });
+  await send({ type: "saveLayout", mode, xy, mu: Array.from(mu) });
   return xy;
 }
 
@@ -320,8 +320,9 @@ function settle(xy, note) {
       x: xy[e.n][0], y: xy[e.n][1], here: here ? here.has(e.id) : false,
     }));
   const hid = pts.filter(q => q.hidden).length;
+  const off = Object.keys(st.mods).length - pts.length;
   say(`${pts.length} posts, ${hid} currently filtered`
-    + (st.offMap ? `, ${st.offMap} text-only left off` : "")
+    + (off > 0 ? `, ${off} without ${mode === "both" ? "both" : mode}` : "")
     + (st.ready ? "" : " — filtering is off") + (note ? ` — ${note}` : ""));
   resize();
   fitView();
@@ -340,25 +341,51 @@ addEventListener("message", e => {
   draw();
 });
 
-let st = null;
+let st = null, arc = [], vecs = new Map();
+
+// Each mode is its own map with its own membership and its own layout. Switching
+// costs no inference at all -- both embeddings are already stored per post, and a
+// mode only changes which blocks go in.
+async function show(note = "") {
+  live = arc.filter(e => st.mods[e.n]?.includes(mode));
+  if (live.length < 5) {
+    pts = [];
+    draw();
+    return say(`only ${live.length} posts have ${mode === "both" ? "both" : mode} — try another mode`);
+  }
+  items = live.map(e => vecs.get(e.n));
+
+  const c = await send({ type: "coords", mode });
+  const xy = c.needLayout ? await relayout() : c.xy;
+  settle(xy, note || (c.placed ? `${c.placed} newly placed` : ""));
+}
+
 async function boot() {
   say("reading the archive…");
   st = await send({ type: "mapState" });
-  const { arc } = await browser.storage.local.get({ arc: [] });
-  live = arc.filter(e => st.p[e.n] !== undefined);
+  const stored = await browser.storage.local.get({ arc: [], mapMode: "both" });
+  arc = stored.arc.filter(e => st.p[e.n] !== undefined);
+  mode = stored.mapMode;
+  $("mode").value = mode;
 
-  if (live.length < 5)
+  if (!arc.length)
     return say("Not much archived yet — browse a board with the extension on and come back.");
 
-  const got = await browser.storage.local.get(live.map(e => `v${e.n}`));
-  items = live.map(e => {
+  const got = await browser.storage.local.get(arc.map(e => `v${e.n}`));
+  for (const e of arc) {
     const v = got[`v${e.n}`];
-    return { img: toF32(v.img), txt: toF32(v.txt) };
-  });
+    if (v) vecs.set(e.n, { img: toF32(v.img), txt: toF32(v.txt) });
+  }
 
-  const c = await send({ type: "coords" });
-  const xy = c.needLayout ? await relayout() : c.xy;
-  settle(xy, c.placed ? `${c.placed} newly placed` : "");
+  $("mode").onchange = async e => {
+    mode = e.target.value;
+    sel = new Set();
+    showSel();
+    await browser.storage.local.set({ mapMode: mode });
+    await show();
+  };
+
+  await show();
 
   $("opentabs").onclick = async () => {
     const urls = threads();

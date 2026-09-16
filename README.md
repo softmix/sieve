@@ -99,13 +99,24 @@ threads lit and the rest of your history dimmed behind them. An iframe rather
 than a second renderer in the content script: the inspect panel, the labelling
 and the re-layout button all come along, and there is one thing to keep working.
 
-`mapVectors()` is the piece that had to be right — both modalities, equally
-weighted, centered, each mean taken over the posts that *have* that modality and
-gaps imputed to it. Not `feats()`: the interaction block earns its keep as a
-discriminative lift but is a 4th-order term with no meaning as a distance.
-Posts with no image are left off entirely; a missing modality leaves that block
-at zero after centering, so they're systematically less similar to everything
-that has one and form their own region however you handle it.
+`mapVectors()` centers before laying out, and clusters on the raw embeddings
+rather than on `feats()` — the interaction block earns its keep as a
+discriminative lift, but it's a 4th-order term with no meaning as a distance.
+
+**The map has three modes: image + text, image only, text only.** They cost no
+extra inference at all; both embeddings are already stored per post, and a mode
+only changes which blocks go into the layout. Each keeps its own membership and
+its own persisted layout, so switching is one UMAP fit the first time and free
+after.
+
+Modes exist because a missing modality is not a neutral one. Its block is zero
+after centering, so a post lacking it is systematically *less* similar to
+everything that has it and drifts into its own region — and imputing the gap
+only moves the problem: filling in missing text made the text-only posts behave
+and produced a cluster of image-only ones instead. A mode admits only the posts
+that have its modality, so there is no hole to cluster on and the means need no
+special-casing. On one real archive: 888 posts, 876 with text, 290 with an
+image, 278 with both — and it was that gap of 12 that showed up as a blob.
 
 Layouts persist. umap-js's `transform()` can't place a new point without the
 `rpForest` and `searchGraph` that `fit()` builds in memory, neither of which

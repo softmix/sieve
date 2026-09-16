@@ -258,33 +258,43 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
 // Pass the `mu` from a previous call to place new items onto an existing
 // layout. The centering mean has to be the one the layout was built with, or a
 // newcomer is measured from a different origin than its neighbours were.
-export function mapVectors(items, mu0 = null) {
-  const hasI = items.map(it => it.img.some(x => x !== 0));
-  const hasT = items.map(it => it.txt.some(x => x !== 0));
-  const mu = mu0 ?? new Float32Array(2 * K);
+export const MODES = ["both", "image", "text"];
+
+// Who belongs on a given map. This is the whole answer to the gap problem, and
+// it replaces an earlier attempt at imputing the missing block. A post lacking
+// the modality being clustered on has a zero block after centering, which makes
+// it systematically less similar to everything that has one -- so it lands in its
+// own region no matter how the hole is filled. Imputation hid half of that and
+// the other half showed up as a cluster of image-only posts.
+//
+// Keeping each mode to the posts that *have* its modality leaves no hole to
+// cluster on, and the per-mode means then need no special-casing either.
+export const hasMode = (v, mode) => {
+  const i = v.img.some(x => x !== 0), t = v.txt.some(x => x !== 0);
+  return mode === "image" ? i : mode === "text" ? t : i && t;
+};
+
+// Callers must have filtered by hasMode() first -- a post with a gap here would
+// silently reintroduce exactly what the mode exists to avoid.
+export function mapVectors(items, mode = "both", mu0 = null) {
+  const useI = mode !== "text", useT = mode !== "image";
+  const W = (useI ? K : 0) + (useT ? K : 0);
+
+  const mu = mu0 ?? new Float32Array(W);
   if (!mu0) {
-    // Each modality's mean is over the posts that *have* it. Averaging a block
-    // over the whole set while only some contribute shrinks the mean toward
-    // zero, the centering is then under-applied, and the cone comes straight
-    // back -- which degrades every cluster, not just the ones with a gap.
-    let ni = 0, nt = 0;
-    for (let k = 0; k < items.length; k++) {
-      const it = items[k];
-      if (hasI[k]) { ni++; for (let i = 0; i < K; i++) mu[i] += it.img[i]; }
-      if (hasT[k]) { nt++; for (let i = 0; i < K; i++) mu[K + i] += it.txt[i]; }
+    for (const it of items) {
+      let o = 0;
+      if (useI) { for (let i = 0; i < K; i++) mu[i] += it.img[i]; o = K; }
+      if (useT) for (let i = 0; i < K; i++) mu[o + i] += it.txt[i];
     }
-    for (let i = 0; i < K; i++) mu[i] /= ni || 1;
-    for (let i = K; i < 2 * K; i++) mu[i] /= nt || 1;
+    for (let i = 0; i < W; i++) mu[i] /= items.length || 1;
   }
 
-  // A missing modality gets the mean, so after centering that block is zero and
-  // the post compares on what it does have. Leaving ZERO in instead hands every
-  // one of them the same -mu block, and they cluster together for the single
-  // thing they have in common: the hole.
-  const vecs = items.map((it, k) => {
-    const v = new Float32Array(2 * K);
-    if (hasI[k]) for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i];
-    if (hasT[k]) for (let i = 0; i < K; i++) v[K + i] = it.txt[i] - mu[K + i];
+  const vecs = items.map(it => {
+    const v = new Float32Array(W);
+    let o = 0;
+    if (useI) { for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i]; o = K; }
+    if (useT) for (let i = 0; i < K; i++) v[o + i] = it.txt[i] - mu[o + i];
     return l2(v);
   });
   return { mu, vecs };

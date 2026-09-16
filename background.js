@@ -4,7 +4,7 @@ import {
 } from "./vendor/transformers.js";
 import {
   Model, Ambient, ZERO, K, l2, toF32, feats, fit, holdout, usable, counts, score, identOf,
-  mapVectors, placeNew,
+  mapVectors, placeNew, hasMode, MODES,
   MIN_PER_CLASS, MIN_AMBIENT, REFIT_EVERY, PANIC_RATE, PANIC_WINDOW,
 } from "./model.js";
 
@@ -300,23 +300,20 @@ async function commit() {
   await browser.storage.local.set({ labels });
 }
 
-// The map is a picture, and a post with no image isn't one. They also don't
-// share a subspace with the posts that do: a missing modality leaves that block
-// at zero after centering, so an imageless post is systematically less similar
-// to everything that has one and lands in its own region however the imputation
-// is done. Thread replies are mostly textless-image-less, and mixing them in
-// visibly degraded the image clusters.
-//
-// Tested on the vector rather than on `e.img`, because a thumbnail that failed
-// to fetch leaves a url behind and a ZERO embedding. They stay archived and
-// still nudge -- they are just not on the map.
-const onMap = v => v && v.img.some(x => x !== 0);
-
 // A stored centering mean is only meaningful to the mapVectors() that produced
-// it, and v2 changed shape: per-modality means over the posts that have each
-// modality, with gaps imputed. Bump this whenever that changes, or new posts get
-// placed against an origin that no longer exists.
-const LAYOUT_V = 2;
+// it. v3 is per-mode: each map takes only the posts that have its modality, so
+// there is no gap left to impute. Bump this whenever that changes, or new posts
+// get placed against an origin that no longer exists.
+const LAYOUT_V = 3;
+
+// Which posts are on which map. Tested on the vector rather than on `e.img`,
+// because a thumbnail that failed to fetch leaves a url behind and a ZERO
+// embedding. Everything stays archived and still nudges whatever its modalities;
+// this only decides what gets drawn.
+const eligible = (vs, mode) => arc.filter(e => {
+  const v = vs.get(e.n);
+  return v && hasMode(v, mode);
+});
 
 // Archive vectors, loaded on demand rather than at boot. Nothing on the browsing
 // path needs them -- dedupe and pruning run off the index -- so the cost lands on
@@ -498,17 +495,20 @@ browser.runtime.onMessage.addListener(async msg => {
       await flush();
       const vs = await vectors();
       const on = ready();
-      const p = {}, mark = {};
-      let offMap = 0;
+      const p = {}, mark = {}, mods = {};
       for (const e of arc) {
         const v = vs.get(e.n);
         if (!v) continue;
-        if (!onMap(v)) { offMap++; continue; }
+        // Which maps this post can appear on. The page filters per mode rather
+        // than asking again every time you switch.
+        const maps = MODES.filter(m => hasMode(v, m));
+        if (!maps.length) continue;
+        mods[e.n] = maps;
         p[e.n] = score(model, ambient, v.img, v.txt);
         const y = taughtIds.get(e.id);
         if (y !== undefined) mark[e.n] = y;
       }
-      return { p, mark, offMap, threshold, ready: on };
+      return { p, mark, mods, threshold, ready: on };
     }
 
     // Coordinates for everything archived. New posts are placed against the
@@ -516,35 +516,49 @@ browser.runtime.onMessage.addListener(async msg => {
     // the same map every time you open it -- spatial memory is most of what a
     // training tool is for, and a layout that rearranges itself has none.
     case "coords": {
-      const { layoutMu, layoutV } = await browser.storage.local.get({ layoutMu: null, layoutV: 0 });
+      const mode = msg.mode ?? "both";
+      const s = await browser.storage.local.get({ layoutMu: {}, layoutV: 0 });
       const vs = await vectors();
-      const rows = arc.filter(e => onMap(vs.get(e.n)));
-      // Nothing usable laid out yet: only the map has UMAP, so it does the first one.
-      if (!layoutMu || layoutV !== LAYOUT_V || !rows.some(e => e.xy)) return { needLayout: true };
+      const rows = eligible(vs, mode);
+      const stale = s.layoutV !== LAYOUT_V;
+      const mu = stale ? null : s.layoutMu?.[mode];
+      // Nothing usable laid out for this mode yet: only the map has UMAP, so it
+      // does the first one. A version bump drops every stored coordinate rather
+      // than placing newcomers against an origin that no longer means anything.
+      if (stale) for (const e of arc) e.xy = null;
+      if (!mu || !rows.some(e => e.xy?.[mode])) return { needLayout: true };
 
-      const { vecs } = mapVectors(rows.map(e => vs.get(e.n)), toF32(layoutMu));
+      const { vecs } = mapVectors(rows.map(e => vs.get(e.n)), mode, toF32(mu));
       const placed = [], todo = [];
-      rows.forEach((e, i) => (e.xy ? placed : todo).push({ e, v: vecs[i] }));
+      rows.forEach((e, i) => (e.xy?.[mode] ? placed : todo).push({ e, v: vecs[i] }));
       if (todo.length) {
-        const ref = placed.map(p => ({ v: p.v, xy: p.e.xy }));
-        for (const t of todo) t.e.xy = placeNew(ref, t.v);
+        const ref = placed.map(p => ({ v: p.v, xy: p.e.xy[mode] }));
+        for (const t of todo) t.e.xy = { ...t.e.xy, [mode]: placeNew(ref, t.v) };
         await flush();
-        console.log(`sieve: placed ${todo.length} new posts on the existing layout`);
+        console.log(`sieve: placed ${todo.length} new posts on the ${mode} layout`);
       }
-      return { xy: Object.fromEntries(rows.filter(e => e.xy).map(e => [e.n, e.xy])), placed: todo.length };
+      return {
+        xy: Object.fromEntries(rows.filter(e => e.xy?.[mode]).map(e => [e.n, e.xy[mode]])),
+        placed: todo.length,
+      };
     }
 
     // A fresh layout from the map, which is the only place UMAP lives. `mu` comes
-    // with it because placement has to centre newcomers on the same mean.
+    // with it because placement has to centre newcomers on the same mean, and
+    // each mode keeps its own.
     case "saveLayout": {
+      const mode = msg.mode ?? "both";
       const byN = new Map(arc.map(e => [e.n, e]));
       for (const [n, xy] of Object.entries(msg.xy)) {
         const e = byN.get(+n);
-        if (e) e.xy = xy;
+        if (e) e.xy = { ...e.xy, [mode]: xy };
       }
-      await browser.storage.local.set({ layoutMu: msg.mu, layoutV: LAYOUT_V });
+      const { layoutMu } = await browser.storage.local.get({ layoutMu: {} });
+      await browser.storage.local.set({
+        layoutMu: { ...layoutMu, [mode]: msg.mu }, layoutV: LAYOUT_V,
+      });
       await flush();
-      console.log(`sieve: laid out ${Object.keys(msg.xy).length} posts`);
+      console.log(`sieve: laid out ${Object.keys(msg.xy).length} posts in ${mode} mode`);
       return { ok: true };
     }
 
