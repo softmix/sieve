@@ -31,7 +31,11 @@ const SITES = [
     mount: p => p.querySelector(".post"),
     text: p => p.querySelector(".postMessage")?.innerText ?? "",
     image: p => p.querySelector(".fileThumb img")?.src ?? null,
-    link: p => p.querySelector("a[href*='/thread/']")?.href ?? null,
+    // The post's own "No." link. On the index it's `thread/N#pM`; inside a thread
+    // it's a bare `#pM` that .href resolves against the thread URL -- both land on
+    // the post. Matching /thread/ anywhere instead picks up a quotelink from the
+    // post body, which points at somebody else's thread.
+    link: p => p.querySelector("a[title='Link to this post']")?.href ?? null,
   },
   {
     host: "old.reddit.com",

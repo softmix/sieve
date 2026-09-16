@@ -56,7 +56,7 @@ async function fill(id, msg, empty) {
     const li = document.createElement("li");
 
     const img = document.createElement("img");
-    // c.img is the thumbnail, c.url the post. Labels predating url have none.
+    // c.img is the thumbnail, c.url the post.
     if (c.img) img.src = c.img;
     img.alt = "";
     img.loading = "lazy";
@@ -67,9 +67,9 @@ async function fill(id, msg, empty) {
 
     const a = document.createElement("a");
     a.className = "post";
-    a.href = c.url || c.img || "#";
-    a.target = "_blank";
-    a.rel = "noreferrer";
+    // No href = not a link, which beats linking to the thumbnail you're already
+    // looking at. Happens for labels predating url.
+    if (c.url) Object.assign(a, { href: c.url, target: "_blank", rel: "noreferrer" });
     a.append(img, txt);
 
     const num = document.createElement("span");
