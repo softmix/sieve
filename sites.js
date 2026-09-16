@@ -27,12 +27,8 @@
 const FOURCHAN_NAV = make => {
   // The path, not the host: the top link points at 4chan.org and the bottom one
   // at 4channel.org. Not the link text either, which is the part that changes
-  // when they restyle.
-  //
-  // The number of matches grows while a page fills in -- 2 then 3 -- and that's
-  // 4chan adding its own, not this selector being loose; naming both hosts
-  // explicitly still climbed. Which is why the loop below counts per parent
-  // instead of asking "have we done this yet".
+  // when they restyle. More appear as a page fills in, so this has to stay
+  // correct when called again with a longer list.
   const ads = [...document.querySelectorAll('a[href*="/advertise"]')];
 
   // Appended to the anchor's *parent* rather than placed after the anchor: the
@@ -40,7 +36,7 @@ const FOURCHAN_NAV = make => {
   // straight after lands between them -- "[Advertise on 4chan [sieve map]]".
   //
   // Counted per parent rather than checked with a boolean, so two anchors
-  // sharing one container get one link each instead of the second being
+  // sharing one container get one link each rather than the second being
   // mistaken for already-done.
   let added = 0;
   for (const box of new Set(ads.map(a => a.parentElement).filter(Boolean))) {

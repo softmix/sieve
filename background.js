@@ -301,9 +301,8 @@ async function commit() {
 }
 
 // A stored centering mean is only meaningful to the mapVectors() that produced
-// it. v3 is per-mode: each map takes only the posts that have its modality, so
-// there is no gap left to impute. Bump this whenever that changes, or new posts
-// get placed against an origin that no longer exists.
+// it. Bump this whenever that function's shape changes, or new posts get placed
+// against an origin that means something else.
 const LAYOUT_V = 3;
 
 // Which posts are on which map. Tested on the vector rather than on `e.img`,
@@ -317,8 +316,8 @@ const eligible = (vs, mode) => arc.filter(e => {
 
 // Archive vectors, loaded on demand rather than at boot. Nothing on the browsing
 // path needs them -- dedupe and pruning run off the index -- so the cost lands on
-// opening a view instead of on every browser start. Kept in memory afterwards;
-// that's what the persistent MV2 background page is for.
+// opening a view instead of on every browser start. Kept in memory afterwards,
+// which is what the persistent MV2 background page is for.
 let arcVec = null;
 async function vectors() {
   if (arcVec) return arcVec;
@@ -454,10 +453,8 @@ browser.runtime.onMessage.addListener(async msg => {
         holdout: holdout(labels, ambient), backend, evs: evTally(),
       };
 
-    // Both of these are now views of the one archive rather than two separate
-    // rolling windows -- close calls used to be a 300-entry pool and recently
-    // hidden a 60-entry in-memory ring that died with the browser. The map is
-    // the third view of the same store.
+    // Two views of the one archive; the map is the third. Uncertainty sampling
+    // by proximity to 0.5, or everything the filter would collapse right now.
     case "closeCalls":
     case "recentHidden": {
       const vs = await vectors();
@@ -524,7 +521,7 @@ browser.runtime.onMessage.addListener(async msg => {
       const mu = stale ? null : s.layoutMu?.[mode];
       // Nothing usable laid out for this mode yet: only the map has UMAP, so it
       // does the first one. A version bump drops every stored coordinate rather
-      // than placing newcomers against an origin that no longer means anything.
+      // than placing newcomers against an origin that means something else.
       if (stale) for (const e of arc) e.xy = null;
       if (!mu || !rows.some(e => e.xy?.[mode])) return { needLayout: true };
 
@@ -563,8 +560,8 @@ browser.runtime.onMessage.addListener(async msg => {
     }
 
     // "Open all the linux threads" -- the thing a lasso is for. Content scripts
-    // can't reach browser.tabs at all, and tabs.create needs no permission of its
-    // own, so this is the whole cost of it.
+    // can't reach browser.tabs at all, and tabs.create needs no permission of
+    // its own, so a message is the whole of it.
     case "openTabs": {
       // A generous lasso over a dense region can hold hundreds of threads, and
       // there's no undo for opening them.

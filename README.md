@@ -224,10 +224,10 @@ reload.
   message points nowhere near the cause.
 - **A 4chan thread URL carries a slug.** The resolved permalink is
   `/g/thread/123/some-slug#p456`, so a regex expecting `#p` straight after the id
-  silently matches with the fragment group empty and folds every reply in the
-  thread onto the OP. That cost 275 posts their archive entry *and* their ambient
-  nudge, with nothing in the log to say so. `identOf()` lives in `model.js` only
-  because that is the file `node --test` can reach.
+  still matches, with the fragment group empty, and folds every reply in the
+  thread onto the OP — costing them both their archive entry and their ambient
+  nudge, silently. `identOf()` lives in `model.js` only because that is the file
+  `node --test` can reach.
 - **A missing modality is not a zero vector.** Leaving `ZERO` in one block hands
   every post with that gap the same `-mu` block, and they cluster on the hole.
   Worse, averaging a block over the whole set while only some posts contribute

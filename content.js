@@ -89,11 +89,6 @@ async function run() {
   // else re-renders the furniture underneath it.
   let said = null;
   const mapLink = () => {
-    // Not gated on site.catalog. That gate is why nothing appeared under 4chan X
-    // and why nothing was even logged: its json-index mode renders the *board
-    // index*, which is a different sites.js entry, so mapLink returned before it
-    // did anything. The map is a global tool and belongs on every page the
-    // extension runs on.
     const make = () => {
       const a = document.createElement("a");
       a.className = "sieve-open";
@@ -103,24 +98,19 @@ async function run() {
       return a;
     };
 
-    // Reported every time the picture changes, and that matters: an earlier
-    // attempt put the link somewhere 4chan X re-renders, so the insertion
-    // succeeded, nothing logged, and nothing was visible -- leaving no way to
-    // tell "went to the wrong place" from "never ran". `found` is in there
-    // because "the anchor isn't on this page" and "the anchor is there and the
-    // link still isn't" need different fixes.
+    // Reported whenever the picture changes. Placement can succeed into an
+    // element something else then re-renders, which looks exactly like never
+    // having run -- and `found` separates "no anchor on this page" from "anchor
+    // there, link still missing", which need different fixes.
     const { found = 0, added = 0 } = site.nav?.(make) ?? {};
     const note = `${found} anchor(s), ${added} added`;
     if (found && note !== said) console.log(`sieve: map link — ${note}`);
     if (found) { said = note; return; }
     if (document.querySelector(".sieve-open")) return;
 
-    // Last resort: floated over the page, attached to <body>. Every attempt to
-    // put this in the page's own furniture has been eaten by something that
-    // re-renders that furniture -- and under 4chan X there may be no anchor to
-    // aim at in the first place. A fixed element owned by nothing else can't
-    // lose that argument. Less tasteful than sitting in the nav, and it is the
-    // version that actually appears.
+    // No anchor on this page -- 4chan X's json-index rebuilds the chrome and may
+    // not carry one. A fixed element parented to <body> is owned by nothing else,
+    // so nothing else can take it away.
     const a = make();
     a.textContent = "▦ sieve map";
     a.dataset.float = "";

@@ -20,8 +20,8 @@ import { mapVectors, toF32, identOf, inside } from "./model.js";
 const OVERLAY = location.hash === "#overlay";
 
 // The UMD bundle assigns a *namespace* to the global, so the constructor sits
-// one level down. Resolved rather than assumed, because `new UMAP()` on the
-// namespace fails with "UMAP is not a constructor", which doesn't point here.
+// one level down. Getting this wrong fails with "UMAP is not a constructor",
+// which points nowhere near here.
 const Umap = globalThis.UMAP?.UMAP ?? globalThis.UMAP;
 
 const $ = id => document.getElementById(id);
@@ -284,10 +284,9 @@ addEventListener("resize", resize);
 
 let live = [], items = [], mode = "both";
 
-// A full UMAP fit. Deliberately manual after the first one: placement drifts
-// slowly, and you notice it exactly when a new region looks wrong -- which is
-// the right moment to be offered the button rather than having the map
-// rearranged under you on every open.
+// A full UMAP fit. Manual after the first one: placement drifts slowly, and you
+// notice it exactly when a new region looks wrong, which is the right moment to
+// be offered a button rather than having the map rearranged on every open.
 async function relayout() {
   if (typeof Umap !== "function")
     throw new Error("vendor/umap.js exposed no UMAP constructor — did umap-js change its bundle?");

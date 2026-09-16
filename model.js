@@ -76,9 +76,8 @@ export class Model {
 
 export const sig = z => 1 / (1 + Math.exp(-z));
 
-// Archive identity. Not a model concern, and it lives here anyway because it
-// needs a test and this is the only file `node --test` can reach -- the version
-// that didn't have one silently collapsed every reply in a thread onto the OP.
+// Archive identity. Not a model concern; it lives here because it needs a test
+// and this is the only file `node --test` can reach.
 //
 // 4chan gives the same post several URL shapes: the catalog links /g/thread/123,
 // the board index and thread pages link /g/thread/123/some-slug#p456, and a
@@ -107,8 +106,7 @@ export const AMBIENT_CAP = 6;
 
 // Ambient drifts the combined score between clicks, and only a refit puts the
 // label weights back in step with it. Clicks alone are too rare -- you can
-// browse a whole board without one -- so refit on a sighting count too. Cheap,
-// now that labels are deliberate clicks only: a few hundred, milliseconds.
+// browse a whole board without one -- so refit on a sighting count too.
 export const REFIT_EVERY = 50;
 
 export class Ambient {
@@ -137,9 +135,9 @@ export class Ambient {
   // once a region reads as keep, sig() of a very negative z is ~0 and further
   // sightings move nothing. Self-extinguishing, not self-reinforcing.
   //
-  // No decay, deliberately. Decay would shrink the weights on every sighting
-  // that no longer moves them, so a mark would fade out exactly when the model
-  // had settled -- the opposite of permanent.
+  // No decay, deliberately. It would shrink the weights on every sighting whose
+  // gradient has already vanished, fading a mark out exactly once the model has
+  // settled -- the opposite of permanent.
   nudge(f, zFit, lr = AMBIENT_LR) {
     const e = sig(this.z(f) + zFit);
     for (let i = 0; i < D; i++) this.w[i] -= lr * e * f[i];
@@ -215,19 +213,18 @@ export const usable = (labels, ambient, hideRate = null) => {
 // it drags true hides down with everything else and the filter quietly dies.
 // Passing its contribution in as a fixed offset makes these weights the residual
 // instead: labels win where they exist, ambient generalises where they don't.
-// The sweep in test.js fails at 7% without this.
+// The sweep in test.js measures what happens without it.
 //
-// ponytail: O(labels * epochs) per click. Cheap now that labels are only
-// deliberate clicks -- a few hundred, not the old 300 seen entries on top.
+// ponytail: O(labels * epochs) per click, over deliberate clicks only -- a few
+// hundred at most, so milliseconds.
 export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, decay = 1e-4 } = {}) {
   const m = new Model();
   const idx = labels.map((_, i) => i);
   // Constant through the fit, so pay for it once rather than per epoch.
   const off = labels.map(l => ambient.z(feats(l.img, l.txt)));
   // Class weights over sample weight rather than count. Without this a few hides
-  // lose to the pile of keeps and the model converges on hiding nothing. Every
-  // label now carries w=1 -- ambient evidence is not stored here any more -- but
-  // imported sets may not, so the weighting stays.
+  // lose to the pile of keeps and the model converges on hiding nothing. Clicks
+  // all carry w=1; imported sets may not, hence weight rather than count.
   let wpos = 0, wneg = 0;
   for (const l of labels) l.y ? (wpos += l.w ?? 1) : (wneg += l.w ?? 1);
   const total = wpos + wneg;
@@ -255,20 +252,19 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
 // unrelated images still have cosine ~0.8 -- so without it every neighbour list
 // is dominated by the mean direction and the layout is mush. See the negative
 // test in test.js, which asserts exactly that failure.
-// Pass the `mu` from a previous call to place new items onto an existing
-// layout. The centering mean has to be the one the layout was built with, or a
-// newcomer is measured from a different origin than its neighbours were.
+// Pass a `mu` back in to place new items onto an existing layout: the centering
+// mean must be the one that layout was built with, or a newcomer is measured
+// from a different origin than its neighbours were.
 export const MODES = ["both", "image", "text"];
 
-// Who belongs on a given map. This is the whole answer to the gap problem, and
-// it replaces an earlier attempt at imputing the missing block. A post lacking
-// the modality being clustered on has a zero block after centering, which makes
-// it systematically less similar to everything that has one -- so it lands in its
-// own region no matter how the hole is filled. Imputation hid half of that and
-// the other half showed up as a cluster of image-only posts.
+// Who belongs on a given map, and the whole answer to the gap problem. A post
+// lacking the modality being clustered on has a zero block after centering,
+// which makes it systematically less similar to everything that has one -- so it
+// lands in its own region however the hole is filled, and imputing it only moves
+// which posts that happens to.
 //
 // Keeping each mode to the posts that *have* its modality leaves no hole to
-// cluster on, and the per-mode means then need no special-casing either.
+// cluster on, and the means then need no special-casing either.
 export const hasMode = (v, mode) => {
   const i = v.img.some(x => x !== 0), t = v.txt.some(x => x !== 0);
   return mode === "image" ? i : mode === "text" ? t : i && t;
@@ -357,9 +353,8 @@ export function placeNew(placed, vec, k = 8) {
 // Every nth label held out, refit on the rest. Shown in the options page.
 //
 // Scored with the ambient term included, because that's what the extension
-// actually does. It also finally measures something: this used to be every 5th
-// of a list dominated by 300 weak "seen" entries, and now every label in it is a
-// deliberate click.
+// actually does. Every label here is a deliberate click, so the number means
+// something rather than measuring how well it predicts its own weak negatives.
 export function holdout(labels, ambient = new Ambient(), frac = 0.2, opts) {
   const test = labels.filter((_, i) => i % Math.round(1 / frac) === 0);
   const train = labels.filter((_, i) => i % Math.round(1 / frac) !== 0);

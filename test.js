@@ -146,15 +146,15 @@ test("ambient browsing never squashes true hides below the threshold", () => {
   // The failure fit() already warns about -- ranking stays perfect while every
   // score drifts toward 0.5, so nothing clears 0.85 and the filter silently does
   // nothing. Ambient pushes in exactly that direction and is never refit away,
-  // so it must be swept: the damage is cumulative and a single N would miss it.
+  // so it has to be swept: the damage is cumulative and a single N would miss it.
   const labels = [];
   for (let k = 0; k < 5; k++)
     for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });
   const amb = new Ambient();
   let m = fit(labels, amb);
 
-  // Refit on the sighting count as production does; without that this measures a
-  // state the extension is never actually in.
+  // Refit on the sighting count as the extension does; without that this
+  // measures a state it is never actually in.
   const session = (n, seed) => {
     for (let k = 0; k < n; k += REFIT_EVERY) {
       browse(m, amb, Math.min(REFIT_EVERY, n - k), { seed: seed + k });
@@ -178,7 +178,7 @@ test("ambient browsing never squashes true hides below the threshold", () => {
 test("a saturated model is recoverable rather than permanently dead", () => {
   // Without the panic guard this is terminal: a one-class fit hides everything,
   // every post is therefore hidden, the gate blocks every nudge, and nothing can
-  // ever push back. Reset is the only exit and it costs the whole label set.
+  // push back. Reset would be the only exit, and it costs the whole label set.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   const m = fit(onlyHides);
   const amb = new Ambient();
@@ -196,8 +196,8 @@ test("a saturated model is recoverable rather than permanently dead", () => {
 test("ambient nudges self-extinguish once a region reads as keep", () => {
   // The bound that makes thousands of one-class updates safe: the error is the
   // *combined* score, so a region that already reads keep stops attracting
-  // weight. Take the error from ambient's own z instead and it never settles --
-  // it walks to the cap and drags the hides down with it.
+  // weight. Taking the error from ambient's own z instead never settles -- it
+  // walks to the cap and drags the hides down with it.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
   const m = fit(onlyHides);          // saturated, so this region starts at ~1.00
   const amb = new Ambient();
@@ -288,10 +288,9 @@ test("each mode admits exactly the posts that have its modality", () => {
 });
 
 test("a modality gap cannot form its own cluster, because it isn't on the map", () => {
-  // The lesson from two rounds of this on real data. Imputing the missing block
-  // hid half the problem -- text-only posts stopped splitting off and image-only
-  // posts started. A post with a hole is simply not on the map that would expose
-  // it, so there is no hole to cluster on and no imputation to get wrong.
+  // Imputing the missing block only moves which posts split off. A post with a
+  // hole is simply not on the map that would expose it, so there is no hole to
+  // cluster on and no imputation to get wrong.
   for (const [gap, mode] of [["txt", "image"], ["img", "text"]]) {
     const items = topics();
     for (let i = 0; i < items.length; i += 3) items[i][gap] = ZERO;
@@ -315,9 +314,9 @@ test("single-modality modes are half as wide", () => {
 
 test("a new post lands among its own topic, not in the middle", () => {
   // The layout has to survive a reload, so newcomers are placed against stored
-  // coordinates rather than by refitting. If this drifts toward the centroid of
-  // everything, the map slowly turns into a blob and nobody notices until the
-  // spatial memory it exists to build has already rotted.
+  // coordinates rather than by refitting. Drift toward the centroid of
+  // everything turns the map back into a blob, slowly enough that the spatial
+  // memory it exists to build rots before anyone notices.
   const items = topics();
   const { mu, vecs } = mapVectors(items, "both");
 
@@ -364,10 +363,9 @@ test("lasso hit-testing handles concave shapes and edges", () => {
 });
 
 test("every URL shape for one post resolves to one identity", () => {
-  // The bug this pins cost a whole verification round-trip: a thread's URL
-  // carries a slug, so /thread/123/some-slug#p456 never reached the #p group and
-  // every reply in the thread collapsed onto the OP. 425 posts scored, 150
-  // archived, and nothing in the log said why.
+  // A thread URL carries a slug, so a pattern expecting #p straight after the id
+  // still matches with the fragment group empty -- and every reply in the thread
+  // collapses onto the OP, silently, with nothing in the log to say so.
   const op = "g/12345/12345";
   for (const [url, want] of [
     ["https://boards.4chan.org/g/thread/12345", op],                        // catalog
