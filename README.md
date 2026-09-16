@@ -41,9 +41,9 @@ Seen-labels satisfy the negative side, so in practice you need 3 hides.
 Fitting is class-balanced over sample *weight*, so a handful of hides isn't
 drowned out by the pile of keeps, and the weak ones dilute correctly.
 
-The first page load downloads CLIP into the browser cache — ~80 MB at the fp16
-WebGPU default, ~40 MB if it falls back to wasm/q8. After that it's local;
-repeated images are cached by URL, which on an imageboard is most of them.
+The first page load downloads CLIP into the browser cache — 303 MB of fp16
+weights, 176 MB vision plus 127 MB text. After that it's local; repeated images
+are cached by URL, which on an imageboard is most of them.
 
 Every post gets scored, nearest-to-the-viewport first, re-evaluated after each
 one so it follows your scrolling. Skipping offscreen posts would be cheaper but
@@ -59,12 +59,25 @@ pipeline's speed. Vision-tower cost per image:
 
 A WebGPU call costs ~101 ms whether it carries 1 image or 16 — it's dispatch-
 bound, and the compute was free all along. So unbatched WebGPU actually *loses*
-to WASM, which is compute-bound and flat. Batched, it wins by ~18x. WASM is kept
-as a fallback and batching costs it nothing.
+to WASM, which is compute-bound and flat. Batched, it wins by ~18x.
 
 End to end on a 4chan catalog that's ~250–330 ms per post unbatched, against
-**~25 ms per post** batched on WebGPU, of which ~1 ms is image fetch. The price
-is fp16 weights, roughly twice the q8 download.
+**~25 ms per post** batched on WebGPU, of which ~1 ms is image fetch.
+
+WASM is **not** kept as a fallback, and that is the important part. A label
+stores the embedding, not the post, so a vector is only comparable to vectors
+from the same weights on the same device. Measured on three images, fp32 and q8
+place the *same image* at cosine 0.86–0.97, and q8 inflates every image×text
+similarity by ~0.05 — enough that one of the three changes which caption it
+matches best. A model fit on one geometry and fed the other is confidently wrong
+rather than merely worse, so a silent fallback corrupts the label set instead of
+degrading it. If WebGPU is unavailable sieve stops and says so in the options
+page, and every label carries the backend that embedded it so a mix is visible.
+
+There is no cheaper portable dtype to retreat to. fp16 refuses to initialise
+outside WebGPU at all (`InsertedPrecisionFreeCast_… node_args.end() was false`);
+the dtypes that run on both are fp32 at 606 MB and q8 at 154 MB, and switching to
+either invalidates every stored vector.
 
 Batch size is deliberately 16 rather than the whole page: the queue re-sorts
 between batches, and that's what lets it follow your scrolling.

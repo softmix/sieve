@@ -35,9 +35,17 @@ async function stats() {
     ? "filtering active"
     : `filtering OFF — needs ${s.need} of each class (have ${s.pos} hide, ${s.neg} keep)`;
 
+  // More than one backend across the label set means some vectors were embedded
+  // somewhere else and can't be compared with the rest. Worth seeing without
+  // opening a console, since it looks exactly like the model getting worse.
+  const ev = Object.entries(s.evs ?? {});
+  const mix = ev.length > 1
+    ? `\n⚠ labels span ${ev.map(([k, n]) => `${n} ${k}`).join(" + ")} — not comparable`
+    : "";
+
   $("stats").textContent =
     `${state}\n${s.taught} clicked (${s.pos} hide, ${s.neg - seen} fine) + ${seen} seen\n`
-    + `${h}\nrunning on ${s.backend}`;
+    + `${h}\nrunning on ${s.backend}${mix}`;
 }
 
 // ---- post lists ----------------------------------------------------------

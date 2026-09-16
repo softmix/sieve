@@ -11,12 +11,19 @@ env.backends.onnx.wasm.wasmPaths = browser.runtime.getURL("vendor/");
 // No COOP/COEP on extension pages, so no SharedArrayBuffer and no ORT threads.
 env.backends.onnx.wasm.numThreads = 1;
 
-// First one that loads *and* runs wins. A WebGPU call costs ~101ms whether it
-// carries 1 image or 16, so it only beats wasm when batched -- see README.
-const BACKENDS = [
-  { device: "webgpu", dtype: "fp16" },
-  { device: "wasm", dtype: "q8" },
-];
+// One backend, no fallback, deliberately. A label stores the embedding, not the
+// post, so a vector is only comparable to vectors from the same weights on the
+// same device -- measured, fp32 and q8 place the *same image* at cosine 0.86.
+// A model fit on one geometry and fed the other is confidently wrong rather than
+// merely worse, so falling back would corrupt the label store, not degrade it.
+//
+// ponytail: no WebGPU means no sieve at all. The way out, if that ever bites, is
+// dtype fp32 everywhere (606 MB, runs on wasm too) plus re-embedding the labels.
+const BACKEND = { device: "webgpu", dtype: "fp16" };
+
+// Stamped on every label, so a future change to the line above is visible in the
+// data instead of silently rewriting what the old vectors mean.
+const EV = `${BACKEND.device}/${BACKEND.dtype}`;
 
 let engine, backend = "loading";
 const load = () => (engine ??= (async () => {
@@ -25,31 +32,38 @@ const load = () => (engine ??= (async () => {
     const d = (x.progress / 10) | 0;
     if (x.status === "progress" && at[x.file] !== d) console.log(`sieve: ${(at[x.file] = d) * 10}% ${x.file}`);
   };
-  const [tok, proc] = await Promise.all([
-    AutoTokenizer.from_pretrained(MODEL),
-    AutoProcessor.from_pretrained(MODEL),
-  ]);
+  try {
+    if (!navigator.gpu) throw new Error("no WebGPU in this browser");
+    const [tok, proc] = await Promise.all([
+      AutoTokenizer.from_pretrained(MODEL),
+      AutoProcessor.from_pretrained(MODEL),
+    ]);
+    const [txt, vis] = await Promise.all([
+      CLIPTextModelWithProjection.from_pretrained(MODEL, { ...BACKEND, progress_callback }),
+      CLIPVisionModelWithProjection.from_pretrained(MODEL, { ...BACKEND, progress_callback }),
+    ]);
+    // WebGPU fails on first inference, not at construction, so exercise it here
+    // to make a broken device show up at startup rather than mid-page.
+    await vis(await proc(new RawImage(new Uint8ClampedArray(224 * 224 * 3), 224, 224, 3)));
+    await txt(tok(["warmup"], { padding: true, truncation: true }));
 
-  for (const cfg of BACKENDS) {
-    if (cfg.device === "webgpu" && !navigator.gpu) continue;
-    try {
-      const [txt, vis] = await Promise.all([
-        CLIPTextModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
-        CLIPVisionModelWithProjection.from_pretrained(MODEL, { ...cfg, progress_callback }),
-      ]);
-      // WebGPU fails on first inference, not at construction, so exercise it
-      // here to make the fallback happen at startup rather than mid-page.
-      await vis(await proc(new RawImage(new Uint8ClampedArray(224 * 224 * 3), 224, 224, 3)));
-      await txt(tok(["warmup"], { padding: true, truncation: true }));
-
-      backend = `${cfg.device}/${cfg.dtype}`;
-      console.log(`sieve: clip ready on ${backend}`);
-      return { tok, proc, txt, vis };
-    } catch (e) {
-      console.warn(`sieve: ${cfg.device}/${cfg.dtype} unusable (${e.message}), trying next`);
-    }
+    backend = EV;
+    console.log(`sieve: clip ready on ${backend}`);
+    return { tok, proc, txt, vis };
+  } catch (e) {
+    // Reported, not swallowed. This `try` covers a 303 MB download as well as
+    // the device probe, and a dropped fetch used to land in the same `catch` as
+    // a dead GPU -- which is how a network blip could silently switch geometry.
+    backend = `unavailable — ${e.message}`;
+    // Retry the next time something needs embedding -- a failed download or a
+    // lost device is worth another go. Only reaches here for failures after the
+    // first await; the synchronous no-WebGPU throw lands before `engine ??=`
+    // assigns, so that one stays rejected, which is what you want on a machine
+    // that has no GPU to find.
+    engine = null;
+    console.error(`sieve: ${backend}`);
+    throw e;
   }
-  throw new Error("sieve: no working inference backend");
 })());
 
 // Persistent background page (MV2), so these survive navigation and tab close.
@@ -184,6 +198,13 @@ const splitKey = key => {
   return { img: key.slice(0, i), text: key.slice(i + 1) };
 };
 
+// Vectors only mean anything against others from the same backend, so more than
+// one entry here says part of the set was embedded elsewhere and is quietly
+// wrong. "unknown" is a label from before stamping; it is almost certainly
+// webgpu/fp16, but nothing recorded it, so it can't claim to be.
+const evTally = () => labels.reduce((m, l) => ((m[l.ev ?? "unknown"] = (m[l.ev ?? "unknown"] ?? 0) + 1), m), {});
+const evLine = ev => Object.entries(ev).map(([k, n]) => `${n} ${k}`).join(" + ");
+
 // Bounded: every scored post adds one, and they all go through fit() on each
 // click. Oldest out. Explicit labels are never pruned.
 let seenMax = 300;
@@ -197,7 +218,7 @@ function noteSeen(e, key, url) {
     const drop = new Set(seen.slice(0, seen.length - seenMax + 1));
     labels = labels.filter(l => !drop.has(l));
   }
-  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, url, ts: Date.now() });
+  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, url, ev: EV, ts: Date.now() });
   seenKeys.add(key);
   soon();
 }
@@ -211,7 +232,7 @@ let recent = [];
 
 function noteHidden(e, key, url) {
   if (taught.has(key) || recent.some(r => r.key === key)) return;
-  recent.unshift({ img: e.img, txt: e.txt, key, url, ts: Date.now() });
+  recent.unshift({ img: e.img, txt: e.txt, key, url, ev: EV, ts: Date.now() });
   recent.length = Math.min(recent.length, RECENT_MAX);
   // The only window onto this list: it's memory-only, and "why is nothing in
   // recently hidden" is otherwise unanswerable without a debugger.
@@ -240,6 +261,9 @@ const booted = (async () => {
   const c = counts(labels);
   console.log(`sieve: ${c.pos} hide / ${c.neg} keep (${c.taught} clicked) loaded,`
     + ` filtering ${usable(labels) ? "on" : "off"}`);
+  const ev = evTally();
+  if (Object.keys(ev).length > 1)
+    console.warn(`sieve: labels span ${evLine(ev)} — vectors from different backends are not comparable`);
 })();
 
 browser.storage.onChanged.addListener(c => {
@@ -289,7 +313,7 @@ browser.runtime.onMessage.addListener(async msg => {
       const key = keyOf(msg.text, msg.img);
       // Replaces rather than stacks, including any weak "seen" entry.
       labels = labels.filter(l => l.key !== key);
-      labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, url: msg.url, ts: Date.now() });
+      labels.push({ img: e.img, txt: e.txt, y: msg.y, src: msg.y ? "hide" : "keep", key, url: msg.url, ev: EV, ts: Date.now() });
       reindex();
       await commit();
       const c = counts(labels);
@@ -299,7 +323,7 @@ browser.runtime.onMessage.addListener(async msg => {
     case "stats":
       return {
         ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS,
-        holdout: holdout(labels), backend,
+        holdout: holdout(labels), backend, evs: evTally(),
       };
 
     // Uncertainty sampling: whichever posts sit nearest 0.5. Drawn from the seen
@@ -339,7 +363,7 @@ browser.runtime.onMessage.addListener(async msg => {
     case "export":
       // Everything needed to rebuild the model elsewhere.
       return labels.map(l => ({
-        img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, url: l.url, ts: l.ts,
+        img: [...l.img], txt: [...l.txt], y: l.y, w: l.w ?? 1, src: l.src, key: l.key, url: l.url, ev: l.ev, ts: l.ts,
       }));
 
     // Merges by key, so importing the same file twice is a no-op.
