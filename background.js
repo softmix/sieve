@@ -4,6 +4,7 @@ import {
 } from "./vendor/transformers.js";
 import {
   Model, Ambient, ZERO, K, l2, toF32, feats, fit, holdout, usable, counts, score, identOf,
+  mapVectors, placeNew,
   MIN_PER_CLASS, MIN_AMBIENT, REFIT_EVERY, PANIC_RATE, PANIC_WINDOW,
 } from "./model.js";
 
@@ -488,6 +489,43 @@ browser.runtime.onMessage.addListener(async msg => {
         if (y !== undefined) mark[e.n] = y;
       }
       return { p, mark, threshold, ready: on };
+    }
+
+    // Coordinates for everything archived. New posts are placed against the
+    // stored layout rather than triggering a refit, which is what makes the map
+    // the same map every time you open it -- spatial memory is most of what a
+    // training tool is for, and a layout that rearranges itself has none.
+    case "coords": {
+      const { layoutMu } = await browser.storage.local.get({ layoutMu: null });
+      const vs = await vectors();
+      const rows = arc.filter(e => vs.has(e.n));
+      // Nothing laid out yet: only the map has UMAP, so it has to do the first one.
+      if (!layoutMu || !rows.some(e => e.xy)) return { needLayout: true };
+
+      const { vecs } = mapVectors(rows.map(e => vs.get(e.n)), toF32(layoutMu));
+      const placed = [], todo = [];
+      rows.forEach((e, i) => (e.xy ? placed : todo).push({ e, v: vecs[i] }));
+      if (todo.length) {
+        const ref = placed.map(p => ({ v: p.v, xy: p.e.xy }));
+        for (const t of todo) t.e.xy = placeNew(ref, t.v);
+        await flush();
+        console.log(`sieve: placed ${todo.length} new posts on the existing layout`);
+      }
+      return { xy: Object.fromEntries(rows.filter(e => e.xy).map(e => [e.n, e.xy])), placed: todo.length };
+    }
+
+    // A fresh layout from the map, which is the only place UMAP lives. `mu` comes
+    // with it because placement has to centre newcomers on the same mean.
+    case "saveLayout": {
+      const byN = new Map(arc.map(e => [e.n, e]));
+      for (const [n, xy] of Object.entries(msg.xy)) {
+        const e = byN.get(+n);
+        if (e) e.xy = xy;
+      }
+      await browser.storage.local.set({ layoutMu: msg.mu });
+      await flush();
+      console.log(`sieve: laid out ${Object.keys(msg.xy).length} posts`);
+      return { ok: true };
     }
 
     // Expired threads, pruned from the catalog's own membership list rather than

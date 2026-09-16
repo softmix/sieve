@@ -255,21 +255,26 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
 // unrelated images still have cosine ~0.8 -- so without it every neighbour list
 // is dominated by the mean direction and the layout is mush. See the negative
 // test in test.js, which asserts exactly that failure.
-export function mapVectors(items) {
+// Pass the `mu` from a previous call to place new items onto an existing
+// layout. The centering mean has to be the one the layout was built with, or a
+// newcomer is measured from a different origin than its neighbours were.
+export function mapVectors(items, mu0 = null) {
   const has = items.map(it => it.txt.some(x => x !== 0));
-  const mu = new Float32Array(2 * K);
-  let nt = 0;
-  for (let k = 0; k < items.length; k++) {
-    const it = items[k];
-    for (let i = 0; i < K; i++) mu[i] += it.img[i];
-    if (!has[k]) continue;
-    nt++;
-    for (let i = 0; i < K; i++) mu[K + i] += it.txt[i];
+  const mu = mu0 ?? new Float32Array(2 * K);
+  if (!mu0) {
+    let nt = 0;
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
+      for (let i = 0; i < K; i++) mu[i] += it.img[i];
+      if (!has[k]) continue;
+      nt++;
+      for (let i = 0; i < K; i++) mu[K + i] += it.txt[i];
+    }
+    for (let i = 0; i < K; i++) mu[i] /= items.length || 1;
+    for (let i = K; i < 2 * K; i++) mu[i] /= nt || 1;
   }
-  for (let i = 0; i < K; i++) mu[i] /= items.length || 1;
-  for (let i = K; i < 2 * K; i++) mu[i] /= nt || 1;
 
-  return items.map((it, k) => {
+  const vecs = items.map((it, k) => {
     const v = new Float32Array(2 * K);
     for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i];
     // A textless post gets the mean text vector, so after centering its text
@@ -279,6 +284,47 @@ export function mapVectors(items) {
     if (has[k]) for (let i = 0; i < K; i++) v[K + i] = it.txt[i] - mu[K + i];
     return l2(v);
   });
+  return { mu, vecs };
+}
+
+// Out-of-sample placement: where does a newly archived post go on an existing
+// layout?
+//
+// umap-js's own transform() cannot answer this. It needs the rpForest and
+// searchGraph that fit() builds in memory, and neither survives a reload -- so
+// restoring a layout from stored coordinates would still mean refitting every
+// session, and the map would rearrange itself every time you opened it.
+//
+// What transform() does *before* its optimisation pass is initTransform: drop
+// the point at the weighted average of its neighbours' existing coordinates.
+// That needs nothing but the vectors and coordinates already on disk, and for
+// placing one post among thousands of known ones the refinement isn't worth
+// rebuilding the whole layout to get.
+export function placeNew(placed, vec, k = 8) {
+  if (!placed.length) return [0, 0];
+  const best = [];
+  for (const p of placed) {
+    let c = 0;
+    for (let i = 0; i < vec.length; i++) c += vec[i] * p.v[i];
+    if (best.length < k || c > best[best.length - 1].c) {
+      best.push({ c, xy: p.xy });
+      best.sort((a, b) => b.c - a.c);
+      if (best.length > k) best.pop();
+    }
+  }
+  // Weight by rank, not by raw cosine. Even centered, neighbours of a CLIP point
+  // sit at similar similarities, so raw weights would be near-uniform and every
+  // newcomer would land in the middle of its neighbourhood's bounding box.
+  // Subtracting the k-th best makes the weights carry the ordering instead.
+  const floor = best[best.length - 1].c;
+  let wsum = 0, x = 0, y = 0;
+  for (const b of best) {
+    const w = b.c - floor + 1e-6;
+    wsum += w;
+    x += w * b.xy[0];
+    y += w * b.xy[1];
+  }
+  return [x / wsum, y / wsum];
 }
 
 // Every nth label held out, refit on the rest. Shown in the options page.

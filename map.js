@@ -211,12 +211,18 @@ addEventListener("resize", resize);
 
 // ---- boot ----------------------------------------------------------------
 
-async function layout(items) {
-  // Checked here so boot()'s catch puts it in the header rather than a console
-  // nobody has open.
+let live = [], items = [];
+
+// A full UMAP fit. Deliberately manual after the first one: placement drifts
+// slowly, and you notice it exactly when a new region looks wrong -- which is
+// the right moment to be offered the button rather than having the map
+// rearranged under you on every open.
+async function relayout() {
   if (typeof Umap !== "function")
     throw new Error("vendor/umap.js exposed no UMAP constructor — did umap-js change its bundle?");
+
   const n = items.length;
+  const { mu, vecs } = mapVectors(items);
   const umap = new Umap({
     // The default 15 is 10% of a small archive, which makes the local manifold
     // estimate noise. Lower, and read the plot as suggestive rather than proof.
@@ -225,40 +231,56 @@ async function layout(items) {
     nComponents: 2,
     random: lcg(1),
   });
-  const vecs = mapVectors(items).map(v => Array.from(v));
-  return umap.fitAsync(vecs, e => {
+  const coords = await umap.fitAsync(vecs.map(v => Array.from(v)), e => {
     if (e % 25 === 0) say(`laying out ${n} posts — ${((e / umap.getNEpochs()) * 100) | 0}%`);
   });
+
+  const xy = Object.fromEntries(live.map((e, i) => [e.n, coords[i]]));
+  await send({ type: "saveLayout", xy, mu: Array.from(mu) });
+  return xy;
 }
 
+function settle(xy, note) {
+  pts = live
+    .filter(e => xy[e.n])
+    .map(e => ({
+      n: e.n, id: e.id, url: e.url, text: e.text, img: e.img,
+      p: st.p[e.n], mark: st.mark[e.n], hidden: st.ready && st.p[e.n] > st.threshold,
+      x: xy[e.n][0], y: xy[e.n][1],
+    }));
+  const hid = pts.filter(q => q.hidden).length;
+  say(`${pts.length} posts, ${hid} currently filtered`
+    + (st.ready ? "" : " — filtering is off") + (note ? ` — ${note}` : ""));
+  resize();
+  fitView();
+  draw();
+}
+
+let st = null;
 async function boot() {
   say("reading the archive…");
-  const st = await send({ type: "mapState" });
+  st = await send({ type: "mapState" });
   const { arc } = await browser.storage.local.get({ arc: [] });
-  const live = arc.filter(e => st.p[e.n] !== undefined);
+  live = arc.filter(e => st.p[e.n] !== undefined);
 
   if (live.length < 5)
     return say("Not much archived yet — browse a board with the extension on and come back.");
 
   const got = await browser.storage.local.get(live.map(e => `v${e.n}`));
-  const items = live.map(e => {
+  items = live.map(e => {
     const v = got[`v${e.n}`];
     return { img: toF32(v.img), txt: toF32(v.txt) };
   });
 
-  const xy = await layout(items);
-  pts = live.map((e, i) => ({
-    n: e.n, id: e.id, url: e.url, text: e.text, img: e.img,
-    p: st.p[e.n], mark: st.mark[e.n], hidden: st.ready && st.p[e.n] > st.threshold,
-    x: xy[i][0], y: xy[i][1],
-  }));
+  const c = await send({ type: "coords" });
+  const xy = c.needLayout ? await relayout() : c.xy;
+  settle(xy, c.placed ? `${c.placed} newly placed` : "");
 
-  const hid = pts.filter(q => q.hidden).length;
-  say(`${pts.length} posts, ${hid} currently filtered`
-    + (st.ready ? "" : " — filtering is off"));
-  resize();
-  fitView();
-  draw();
+  $("refit").hidden = false;
+  $("refit").onclick = async () => {
+    $("refit").disabled = true;
+    try { settle(await relayout()); } finally { $("refit").disabled = false; }
+  };
 }
 
 boot().catch(e => say(`failed: ${e.message}`));

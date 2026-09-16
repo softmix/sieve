@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, identOf,
+  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, placeNew, identOf,
   Ambient, AMBIENT_CAP, MIN_AMBIENT, PANIC_RATE, REFIT_EVERY,
 } from "./model.js";
 
@@ -257,7 +257,7 @@ const separation = (vs, items) => {
 test("map vectors separate topics that raw embeddings do not", () => {
   const items = topics();
   const raw = items.map(it => l2([...it.img, ...it.txt]));
-  const sep = separation(mapVectors(items), items);
+  const sep = separation(mapVectors(items).vecs, items);
   const rawSep = separation(raw, items);
   assert.ok(sep > rawSep * 2,
     `centering barely helped: ${rawSep.toFixed(3)} -> ${sep.toFixed(3)}`);
@@ -281,7 +281,7 @@ test("textless posts do not cluster together for having no text", () => {
   // because of the hole rather than because of what they are.
   const mute = [0, 12, 24];
   for (const i of mute) items[i].txt = ZERO;
-  const vs = mapVectors(items);
+  const vs = mapVectors(items).vecs;
 
   for (const i of mute) {
     const own = vs.map((v, j) => ({ j, c: cos(vs[i], v) }))
@@ -290,6 +290,36 @@ test("textless posts do not cluster together for having no text", () => {
     assert.equal(items[own.j].topic, items[i].topic,
       `a textless post's nearest neighbour was topic ${items[own.j].topic}, not its own`);
   }
+});
+
+test("a new post lands among its own topic, not in the middle", () => {
+  // The layout has to survive a reload, so newcomers are placed against stored
+  // coordinates rather than by refitting. If this drifts toward the centroid of
+  // everything, the map slowly turns into a blob and nobody notices until the
+  // spatial memory it exists to build has already rotted.
+  const items = topics();
+  const { mu, vecs } = mapVectors(items);
+
+  // Stand-in layout: each topic parked in its own corner.
+  const corners = [[-10, -10], [10, -10], [0, 10]];
+  const placed = items.map((it, i) => ({ v: vecs[i], xy: corners[it.topic] }));
+
+  for (let c = 0; c < 3; c++) {
+    const fresh = { img: jit(emb(10 + c), 500, 0.25), txt: jit(emb(20 + c), 577, 0.25) };
+    // Same mu the layout was built with -- that's what the second argument is for.
+    const { vecs: [v] } = mapVectors([fresh], mu);
+    const [x, y] = placeNew(placed, v);
+    const d = Math.hypot(x - corners[c][0], y - corners[c][1]);
+    const other = Math.min(...corners.filter((_, j) => j !== c)
+      .map(([ax, ay]) => Math.hypot(x - ax, y - ay)));
+    assert.ok(d < other, `topic ${c} landed ${d.toFixed(1)} from home, ${other.toFixed(1)} from a neighbour`);
+    assert.ok(d < 4, `topic ${c} drifted ${d.toFixed(1)} toward the middle`);
+  }
+});
+
+test("placing against an empty layout does not explode", () => {
+  const { vecs } = mapVectors(topics());
+  assert.deepEqual(placeNew([], vecs[0]), [0, 0]);
 });
 
 test("every URL shape for one post resolves to one identity", () => {
