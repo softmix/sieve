@@ -12,14 +12,27 @@
   background: Canvas;
 }
 
-#sieve-open {
-  display: inline-block;
-  margin: 4px 0;
+/* In the nav bar it inherits the surrounding link styling and just needs to be
+   clickable; `loose` is the fallback position above the thread grid. */
+.sieve-open { cursor: pointer; }
+
+/* The fallback, for pages with no nav anchor to sit beside. Fixed and parented
+   to <body>, so nothing that rebuilds the page's furniture can take it. */
+.sieve-open[data-float] {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 7px;
   font: 12px/1.4 monospace;
-  cursor: pointer;
-  opacity: .6;
+  color: CanvasText;
+  background: Canvas;
+  border: 1px solid;
+  border-radius: 3px;
+  opacity: .5;
+  /* Under the map overlay, which sits at 2147483000. */
+  z-index: 2147482000;
 }
-#sieve-open:hover { opacity: 1; }
+.sieve-open[data-float]:hover { opacity: 1; }
 
 /* Floated so it rides alongside the post's header line rather than adding a row
    to every post on the page. */

@@ -11,10 +11,46 @@
 // catalog: this page lists *every* live thread on the board, so anything the
 //         archive holds for this board that isn't here has 404'd. That's how
 //         expired posts get pruned without asking the server about each one.
+// nav:    places the map link. Takes a factory rather than an element, because a
+//         page can carry more than one anchor and each wants its own. Returns
+//         {found, added}; nothing found and the caller floats the link over the
+//         page instead. Does the insertion itself because the right anchor is a
+//         per-site judgement, and it must be idempotent -- it runs on every scan,
+//         which is what puts the link back when something wipes it.
 // block:  give the badge its own line instead of floating it.
 // side:   "left" to float left.
 // image:  the thumbnail, deliberately -- already decoded in the page, and CLIP
 //         resizes to 224px anyway.
+
+// Shared by every 4chan page, because the map is a global tool and the board
+// index in 4chan X's json-index mode is a different entry from the catalog.
+const FOURCHAN_NAV = make => {
+  // The path, not the host: the top link points at 4chan.org and the bottom one
+  // at 4channel.org. Not the link text either, which is the part that changes
+  // when they restyle.
+  //
+  // The number of matches grows while a page fills in -- 2 then 3 -- and that's
+  // 4chan adding its own, not this selector being loose; naming both hosts
+  // explicitly still climbed. Which is why the loop below counts per parent
+  // instead of asking "have we done this yet".
+  const ads = [...document.querySelectorAll('a[href*="/advertise"]')];
+
+  // Appended to the anchor's *parent* rather than placed after the anchor: the
+  // brackets around each link are text nodes either side of it, so inserting
+  // straight after lands between them -- "[Advertise on 4chan [sieve map]]".
+  //
+  // Counted per parent rather than checked with a boolean, so two anchors
+  // sharing one container get one link each instead of the second being
+  // mistaken for already-done.
+  let added = 0;
+  for (const box of new Set(ads.map(a => a.parentElement).filter(Boolean))) {
+    const want = ads.filter(a => a.parentElement === box).length;
+    const have = box.querySelectorAll(":scope > .sieve-open").length;
+    for (let i = have; i < want; i++) { box.append(" ", make()); added++; }
+  }
+  return { found: ads.length, added };
+};
+
 // eslint-disable-next-line no-unused-vars
 const SITES = [
   {
@@ -23,6 +59,7 @@ const SITES = [
     path: /^\/[^/]+\/catalog/,
     post: ".thread",
     catalog: true,
+    nav: FOURCHAN_NAV,
     block: true,   // no header row to sit beside, and narrow images sit next to a float
     text: p => p.querySelector(".teaser")?.innerText ?? "",
     image: p => p.querySelector("img.thumb")?.src ?? null,
@@ -32,6 +69,7 @@ const SITES = [
     // Board index and thread pages, both server-rendered.
     host: "boards.4chan.org",
     post: ".postContainer",
+    nav: FOURCHAN_NAV,
     mount: p => p.querySelector(".post"),
     text: p => p.querySelector(".postMessage")?.innerText ?? "",
     image: p => p.querySelector(".fileThumb img")?.src ?? null,

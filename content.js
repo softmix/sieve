@@ -83,25 +83,57 @@ async function run() {
     if (e.origin === ORIGIN && e.data?.sieve === "close" && frame) toggleMap();
   });
 
-  // Inserted *before* the thread container rather than inside it: 4chan rebuilds
-  // that container on its own sort and filter, and anything within goes with it.
-  const mapLink = posts => {
-    if (!site.catalog || document.getElementById("sieve-open")) return;
-    const box = posts[0]?.parentElement;
-    if (!box?.parentElement) return;
-    const a = document.createElement("a");
-    a.id = "sieve-open";
+  // Beside the site's own advertise link where there is one, floating over the
+  // page where there isn't. Runs on every scan and the placement is idempotent,
+  // which is the only thing keeping the link alive on a page where something
+  // else re-renders the furniture underneath it.
+  let said = null;
+  const mapLink = () => {
+    // Not gated on site.catalog. That gate is why nothing appeared under 4chan X
+    // and why nothing was even logged: its json-index mode renders the *board
+    // index*, which is a different sites.js entry, so mapLink returned before it
+    // did anything. The map is a global tool and belongs on every page the
+    // extension runs on.
+    const make = () => {
+      const a = document.createElement("a");
+      a.className = "sieve-open";
+      a.textContent = "[sieve map]";       // the bracket style the nav bars use
+      a.title = "the whole archive, laid out — this board's threads highlighted";
+      a.onclick = toggleMap;
+      return a;
+    };
+
+    // Reported every time the picture changes, and that matters: an earlier
+    // attempt put the link somewhere 4chan X re-renders, so the insertion
+    // succeeded, nothing logged, and nothing was visible -- leaving no way to
+    // tell "went to the wrong place" from "never ran". `found` is in there
+    // because "the anchor isn't on this page" and "the anchor is there and the
+    // link still isn't" need different fixes.
+    const { found = 0, added = 0 } = site.nav?.(make) ?? {};
+    const note = `${found} anchor(s), ${added} added`;
+    if (found && note !== said) console.log(`sieve: map link — ${note}`);
+    if (found) { said = note; return; }
+    if (document.querySelector(".sieve-open")) return;
+
+    // Last resort: floated over the page, attached to <body>. Every attempt to
+    // put this in the page's own furniture has been eaten by something that
+    // re-renders that furniture -- and under 4chan X there may be no anchor to
+    // aim at in the first place. A fixed element owned by nothing else can't
+    // lose that argument. Less tasteful than sitting in the nav, and it is the
+    // version that actually appears.
+    const a = make();
     a.textContent = "▦ sieve map";
-    a.title = "the whole archive, laid out — this board's threads highlighted";
-    a.onclick = toggleMap;
-    box.parentElement.insertBefore(a, box);
+    a.dataset.float = "";
+    document.body.append(a);
+    if (said !== "float") console.warn("sieve: no nav anchor on this page, map link is floating bottom-left");
+    said = "float";
   };
 
   const scan = () => {
     const before = pending.size;
     const posts = [...document.querySelectorAll(site.post)];
     prune(posts);
-    mapLink(posts);
+    mapLink();
     for (const p of posts)
       if (!seen.has(p)) {
         seen.add(p);
