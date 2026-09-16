@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score,
+  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score, mapVectors, identOf,
   Ambient, AMBIENT_CAP, MIN_AMBIENT, PANIC_RATE, REFIT_EVERY,
 } from "./model.js";
 
@@ -229,6 +229,91 @@ test("scores actually clear the default threshold, not just rank correctly", () 
   const over = hides.filter(p => p > 0.85).length / hides.length;
   assert.ok(over > 0.8, `only ${(over * 100) | 0}% of true hides clear 0.85 at ${labels.length} labels`);
   assert.ok(held.filter(l => !l.y).every(l => l.p < 0.85), "a true keep crossed the threshold");
+});
+
+// Three topics sitting in the same cone, the way a board's posts actually do.
+const topics = () => {
+  const out = [];
+  for (let c = 0; c < 3; c++)
+    for (let k = 0; k < 12; k++)
+      out.push({ img: jit(emb(10 + c), k, 0.25), txt: jit(emb(20 + c), k + 77, 0.25), topic: c });
+  return out;
+};
+
+const cos = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+
+// Mean cosine within a topic minus mean cosine across topics. The bigger this
+// is, the more a neighbour-based layout has to work with.
+const separation = (vs, items) => {
+  let wi = 0, wn = 0, bi = 0, bn = 0;
+  for (let a = 0; a < vs.length; a++)
+    for (let b = a + 1; b < vs.length; b++) {
+      const c = cos(vs[a], vs[b]);
+      if (items[a].topic === items[b].topic) { wi += c; wn++; } else { bi += c; bn++; }
+    }
+  return wi / wn - bi / bn;
+};
+
+test("map vectors separate topics that raw embeddings do not", () => {
+  const items = topics();
+  const raw = items.map(it => l2([...it.img, ...it.txt]));
+  const sep = separation(mapVectors(items), items);
+  const rawSep = separation(raw, items);
+  assert.ok(sep > rawSep * 2,
+    `centering barely helped: ${rawSep.toFixed(3)} -> ${sep.toFixed(3)}`);
+  assert.ok(sep > 0.2, `topics are not separable enough to lay out: ${sep.toFixed(3)}`);
+});
+
+test("without centering the cone swamps the topics", () => {
+  // The same failure test.js's header warns about, made load-bearing: uncentered,
+  // everything is ~0.8 to everything and a neighbour list is noise.
+  const items = topics();
+  const raw = items.map(it => l2([...it.img, ...it.txt]));
+  let lo = 1;
+  for (let a = 0; a < raw.length; a++)
+    for (let b = a + 1; b < raw.length; b++) lo = Math.min(lo, cos(raw[a], raw[b]));
+  assert.ok(lo > 0.6, `uncentered vectors should all be crowded together, floor was ${lo.toFixed(3)}`);
+});
+
+test("textless posts do not cluster together for having no text", () => {
+  const items = topics();
+  // One per topic loses its text, so if they end up neighbours it can only be
+  // because of the hole rather than because of what they are.
+  const mute = [0, 12, 24];
+  for (const i of mute) items[i].txt = ZERO;
+  const vs = mapVectors(items);
+
+  for (const i of mute) {
+    const own = vs.map((v, j) => ({ j, c: cos(vs[i], v) }))
+      .filter(x => x.j !== i)
+      .sort((a, b) => b.c - a.c)[0];
+    assert.equal(items[own.j].topic, items[i].topic,
+      `a textless post's nearest neighbour was topic ${items[own.j].topic}, not its own`);
+  }
+});
+
+test("every URL shape for one post resolves to one identity", () => {
+  // The bug this pins cost a whole verification round-trip: a thread's URL
+  // carries a slug, so /thread/123/some-slug#p456 never reached the #p group and
+  // every reply in the thread collapsed onto the OP. 425 posts scored, 150
+  // archived, and nothing in the log said why.
+  const op = "g/12345/12345";
+  for (const [url, want] of [
+    ["https://boards.4chan.org/g/thread/12345", op],                        // catalog
+    ["https://boards.4chan.org/g/thread/12345#p12345", op],                 // index, OP
+    ["https://boards.4chan.org/g/thread/12345/sqt-stupid-questions", op],   // catalog, slugged
+    ["https://boards.4chan.org/g/thread/12345/sqt-stupid-questions#p12345", op],
+    ["https://boards.4chan.org/g/thread/12345/sqt#p12350", "g/12345/12350"],  // a reply
+    ["https://boards.4chan.org/g/thread/12345#p12350", "g/12345/12350"],
+  ]) assert.equal(identOf(url)?.id, want, url);
+
+  assert.equal(identOf("https://boards.4chan.org/g/thread/12345/sqt#p12350").thread, 12345);
+  assert.equal(identOf("https://boards.4chan.org/vg/thread/9#p9").board, "vg");
+
+  // No identity anywhere else, which is what keeps reddit out of the archive --
+  // and therefore out of ambient.
+  for (const u of ["https://old.reddit.com/r/g/comments/abc/x/", "", null, undefined])
+    assert.equal(identOf(u), null, String(u));
 });
 
 test("holdout reports accuracy on data it did not train on", () => {

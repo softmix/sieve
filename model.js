@@ -7,6 +7,13 @@ const XS = Math.sqrt(K);
 
 export const ZERO = new Float32Array(K);
 
+// storage.local and runtime messaging both round-trip typed arrays differently
+// depending on the path, and a Float32Array can come back as a plain object with
+// numeric keys. Lives here because the map page needs it as much as the
+// background does.
+export const toF32 = v => v instanceof Float32Array ? v
+  : Float32Array.from(Array.isArray(v) ? v : Object.values(v));
+
 export const l2 = v => {
   let n = 0;
   for (const x of v) n += x * x;
@@ -68,6 +75,22 @@ export class Model {
 }
 
 export const sig = z => 1 / (1 + Math.exp(-z));
+
+// Archive identity. Not a model concern, and it lives here anyway because it
+// needs a test and this is the only file `node --test` can reach -- the version
+// that didn't have one silently collapsed every reply in a thread onto the OP.
+//
+// 4chan gives the same post several URL shapes: the catalog links /g/thread/123,
+// the board index and thread pages link /g/thread/123/some-slug#p456, and a
+// thread's own OP links #p123. Keying on board/thread/post folds those together
+// so the OP is archived -- and nudged -- once rather than once per surface.
+// Anything else (reddit) has no identity here on purpose: no archive, no nudge.
+const IDENT = /boards\.4chan\.org\/([^/]+)\/thread\/(\d+)(?:\/[^#]*)?(?:#p(\d+))?/;
+
+export const identOf = url => {
+  const m = url ? IDENT.exec(url) : null;
+  return m ? { board: m[1], thread: +m[2], id: `${m[1]}/${m[2]}/${m[3] ?? m[2]}` } : null;
+};
 
 // One permanent step per post you scrolled past without hiding. It lives
 // outside the fitted weights because fit() rebuilds those from scratch on every
@@ -220,6 +243,42 @@ export function fit(labels, ambient = new Ambient(), { epochs = 200, lr = 0.5, d
       m.learn(labels[i].img, labels[i].txt, labels[i].y, lr * wt(labels[i]), decay, off[i]);
   }
   return m;
+}
+
+// The vector the map clusters on: both modalities, equally weighted, centered.
+//
+// Not feats(). That interaction block earns its keep as a discriminative lift,
+// but as a *distance* it's a 4th-order term with no interpretation, and it would
+// only add noise to a neighbourhood.
+//
+// Centering is not optional. CLIP embeddings sit in a narrow cone -- two
+// unrelated images still have cosine ~0.8 -- so without it every neighbour list
+// is dominated by the mean direction and the layout is mush. See the negative
+// test in test.js, which asserts exactly that failure.
+export function mapVectors(items) {
+  const has = items.map(it => it.txt.some(x => x !== 0));
+  const mu = new Float32Array(2 * K);
+  let nt = 0;
+  for (let k = 0; k < items.length; k++) {
+    const it = items[k];
+    for (let i = 0; i < K; i++) mu[i] += it.img[i];
+    if (!has[k]) continue;
+    nt++;
+    for (let i = 0; i < K; i++) mu[K + i] += it.txt[i];
+  }
+  for (let i = 0; i < K; i++) mu[i] /= items.length || 1;
+  for (let i = K; i < 2 * K; i++) mu[i] /= nt || 1;
+
+  return items.map((it, k) => {
+    const v = new Float32Array(2 * K);
+    for (let i = 0; i < K; i++) v[i] = it.img[i] - mu[i];
+    // A textless post gets the mean text vector, so after centering its text
+    // block is zero and it compares on image alone. Leaving ZERO there instead
+    // hands every one of them the same -mu block, and they cluster together for
+    // the single thing they have in common: having no text.
+    if (has[k]) for (let i = 0; i < K; i++) v[K + i] = it.txt[i] - mu[K + i];
+    return l2(v);
+  });
 }
 
 // Every nth label held out, refit on the rest. Shown in the options page.

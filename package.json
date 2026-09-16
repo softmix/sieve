@@ -12,7 +12,8 @@
     "clean": "node -e \"require('fs').rmSync('web-ext-artifacts',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0"
+    "@huggingface/transformers": "^4.2.0",
+    "umap-js": "^1.4.0"
   },
   "devDependencies": {
     "web-ext": "^10.6.0"

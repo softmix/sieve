@@ -3,7 +3,7 @@ import {
   CLIPVisionModelWithProjection, RawImage, env,
 } from "./vendor/transformers.js";
 import {
-  Model, Ambient, ZERO, K, l2, feats, fit, holdout, usable, counts, score,
+  Model, Ambient, ZERO, K, l2, toF32, feats, fit, holdout, usable, counts, score, identOf,
   MIN_PER_CLASS, MIN_AMBIENT, REFIT_EVERY, PANIC_RATE, PANIC_WINDOW,
 } from "./model.js";
 
@@ -178,10 +178,6 @@ const embed = items => {
   return run;
 };
 
-// storage.local round-trips typed arrays differently per backend.
-const toF32 = v => v instanceof Float32Array ? v
-  : Float32Array.from(Array.isArray(v) ? v : Object.values(v));
-
 let model = new Model();
 let ambient = new Ambient();
 let labels = [];
@@ -190,17 +186,17 @@ let scored = 0, spent = 0, queued = 0, fetched = 0;
 // Exact recall, in front of the model: an explicitly marked post is a stored
 // fact, so it stays hidden regardless of what the model currently thinks.
 const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
-let taught = new Map(), taughtIds = new Set();
+let taught = new Map(), taughtIds = new Map();
 
 function reindex() {
   taught = new Map();
-  taughtIds = new Set();
+  taughtIds = new Map();
   for (const l of labels) {
     if (l.key) taught.set(l.key, l.y);
     // Archive identity too, so a decided post can be recognised in the archive
-    // without matching truncated text against a key built from full text.
+    // without matching its truncated text against a key built from full text.
     const it = identOf(l.url);
-    if (it) taughtIds.add(it.id);
+    if (it) taughtIds.set(it.id, l.y);
   }
 }
 
@@ -221,16 +217,6 @@ let arc = [];                      // index: metadata only, no vectors
 let arcById = new Map();
 let arcNextId = 1;
 let unwritten = new Map();         // id -> {img, txt, thumb} not yet persisted
-
-// 4chan only, and this regex is that rule. The catalog links /g/thread/123 while
-// the index and thread pages link /g/thread/123#p456; identifying by
-// board/thread/post collapses the OP's two forms onto one entry instead of
-// archiving -- and nudging -- the same post twice.
-const IDENT = /boards\.4chan\.org\/([^/]+)\/thread\/(\d+)(?:#p(\d+))?/;
-const identOf = url => {
-  const m = url && IDENT.exec(url);
-  return m && { board: m[1], thread: +m[2], id: `${m[1]}/${m[2]}/${m[3] ?? m[2]}` };
-};
 
 // Rolling window behind usable()'s panic guard. A model hiding essentially the
 // whole page is broken rather than strict, and without this that state is
@@ -483,6 +469,25 @@ browser.runtime.onMessage.addListener(async msg => {
       reindex();
       await commit();
       return { ...counts(labels), ready: ready(), need: MIN_PER_CLASS };
+    }
+
+    // Scores and label state for the map. Only this, not the vectors: the map is
+    // an extension page and can read storage.local itself, which beats pushing
+    // 12 MB through the message channel. flush() first so nothing it needs is
+    // still sitting in `unwritten`.
+    case "mapState": {
+      await flush();
+      const vs = await vectors();
+      const on = ready();
+      const p = {}, mark = {};
+      for (const e of arc) {
+        const v = vs.get(e.n);
+        if (!v) continue;
+        p[e.n] = score(model, ambient, v.img, v.txt);
+        const y = taughtIds.get(e.id);
+        if (y !== undefined) mark[e.n] = y;
+      }
+      return { p, mark, threshold, ready: on };
     }
 
     // Expired threads, pruned from the catalog's own membership list rather than

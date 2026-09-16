@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>sieve — map</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 system-ui, sans-serif;
+    display: grid;
+    grid-template-columns: 1fr 22em;
+    grid-template-rows: auto 1fr;
+  }
+
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: baseline; gap: 1em;
+    padding: .6em 1em;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  }
+  header h1 { font-size: 1em; margin: 0; font-weight: 600; }
+  #status { opacity: .65; }
+  .spacer { flex: 1; }
+
+  /* The canvas is sized to its box in JS; without min-width:0 the grid column
+     refuses to shrink and it grows on every resize. */
+  #wrap { position: relative; min-width: 0; overflow: hidden; }
+  #map { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #map.drag { cursor: grabbing; }
+
+  aside {
+    border-left: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    padding: 1em; overflow: auto;
+  }
+  aside img {
+    width: 100%; max-height: 16em; object-fit: contain;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+  }
+  #ftext { white-space: pre-wrap; word-break: break-word; max-height: 18em; overflow: auto; opacity: .85; }
+  #fscore { font-family: ui-monospace, monospace; }
+  .empty { opacity: .55; }
+  .marks { display: flex; gap: .5em; margin: .8em 0; }
+  button { font: inherit; padding: .25em .7em; cursor: pointer; }
+  .marks button { flex: 1; }
+  .hide { color: #c0392b; }
+  .keep { color: #27803d; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: .3em 1em; margin-top: 1.4em; opacity: .7; font-size: .92em; }
+  .legend span { display: flex; align-items: center; gap: .4em; }
+  .sw { width: .9em; height: .9em; border-radius: 50%; }
+</style>
+
+<header>
+  <h1>sieve map</h1>
+  <span id="status">…</span>
+  <span class="spacer"></span>
+  <button id="refit" hidden>re-lay out</button>
+</header>
+
+<div id="wrap"><canvas id="map"></canvas></div>
+
+<aside>
+  <div id="focus" class="empty">Hover a point to inspect it; click to pin it here.</div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:rgb(110 150 210)"></i> keep</span>
+    <span><i class="sw" style="background:rgb(190 45 40)"></i> hide</span>
+    <span><i class="sw" style="border:2px solid currentColor"></i> filtered now</span>
+    <span><i class="sw" style="border:2px solid #c0392b"></i> you hid</span>
+    <span><i class="sw" style="border:2px solid #27803d"></i> you kept</span>
+  </div>
+</aside>
+
+<!-- UMD, so this has to be a classic script: it sets a global the module below
+     then picks up. Modules are deferred, so the ordering works out. -->
+<script src="vendor/umap.js"></script>
+<script type="module" src="map.js"></script>

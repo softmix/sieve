@@ -33,9 +33,14 @@ for (const [bare, rel] of Object.entries(REMAP)) {
 }
 writeFileSync("vendor/transformers.js", src);
 
+// umap-js ships one self-contained UMD bundle with its only dependency already
+// inside it, so unlike transformers it needs no specifier surgery -- a plain
+// <script> tag is enough and the global UMAP falls out. 83 KB.
+write("node_modules/umap-js/lib/umap-js.min.js", "umap.js");
+
 // Multi-file ESM package: index.js imports its siblings.
 const common = "node_modules/onnxruntime-common/dist/esm";
 const js = readdirSync(common).filter(f => f.endsWith(".js"));
 for (const f of js) write(`${common}/${f}`, `onnxruntime-common/${f}`);
 
-console.log(`vendored 4 files + ${js.length} onnxruntime-common modules`);
+console.log(`vendored 5 files + ${js.length} onnxruntime-common modules`);
