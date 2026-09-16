@@ -18,6 +18,25 @@ async function run() {
     if (msg.type === "teach" && target) teach(target, msg.y);
   });
 
+  // Delegated rather than per-button, because 4chan rebuilds post markup (inline
+  // quotes, its own hide control) and a badge that round-trips through innerHTML
+  // survives as markup with its handlers gone. badge() then finds it and hands it
+  // back, so those controls are dead for good -- and a dead <button> inside
+  // 4chan's delform is a submit button, which is how clicking ✓ became a POST to
+  // the delete endpoint. A document listener can't be lost that way.
+  // Capture, so the site's own click handlers don't get there first.
+  addEventListener("click", e => {
+    const b = e.target.closest?.(".sieve-tag > *");
+    const post = b && e.target.closest(site.post);
+    if (!post) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Peek reveals without labelling. ✓ asserts "this post is fine", so using it
+    // to look at a hidden post would poison the label set.
+    if (b.dataset.sieveY === undefined) set(post, { peek: !state.get(post)?.peek });
+    else teach(post, +b.dataset.sieveY);
+  }, true);
+
   // Every post gets scored, nearest-to-viewport first. Skipping offscreen posts
   // would be cheaper but they'd then flash into view before being hidden.
   const pending = new Set();
@@ -77,18 +96,13 @@ async function run() {
     if (site.side) el.dataset.side = site.side;
     el.innerHTML = '<span class="sieve-p"></span>';
 
-    // Peek: reveals without labelling. ✓ asserts "this is fine", so using it to
-    // look at a hidden post would poison the label set.
-    el.querySelector(".sieve-p").onclick = e => {
-      e.preventDefault();
-      e.stopPropagation();
-      set(post, { peek: !state.get(post)?.peek });
-    };
     for (const [y, glyph, title] of [[0, "✓", "this post is fine"], [1, "✗", "hide posts like this"]]) {
       const b = document.createElement("button");
+      // Default is type=submit, and 4chan wraps every post in a form.
+      b.type = "button";
       b.textContent = glyph;
       b.title = title;
-      b.onclick = e => { e.preventDefault(); e.stopPropagation(); teach(post, y); };
+      b.dataset.sieveY = y;
       el.append(b);
     }
     into.prepend(el);
