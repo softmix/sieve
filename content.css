@@ -52,6 +52,16 @@
 .sieve-tag[data-mark="keep"] { color: #27803d; }
 
 /* Collapsed: the badge is all that's left, and a float would leave the
-   container zero-height. */
-.sieve-hidden > *:not(.sieve-tag) { display: none !important; }
-.sieve-hidden > .sieve-tag { float: none; display: flex; }
+   container zero-height.
+
+   The :has() is the hover peek: point at the badge and the post opens, move off
+   and it closes again. Click the score for the sticky version. Neither labels
+   anything -- ✓ would assert the post is fine and poison the label set.
+
+   The whole badge and not just the score, because .sieve-p to ✓ is a 20px slide
+   and collapsing the post underneath that gesture makes it unclickable. What
+   made this feel wide was fit-content: `display: flex` alone is block-level, so
+   the collapsed badge spanned the post's full width and hovering anywhere on
+   that row opened it. */
+.sieve-hidden:not(:has(> .sieve-tag:hover)) > *:not(.sieve-tag) { display: none !important; }
+.sieve-hidden > .sieve-tag { float: none; display: flex; width: fit-content; }
