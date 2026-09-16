@@ -3,10 +3,9 @@ const send = msg => browser.runtime.sendMessage(msg);
 
 // ---- settings ------------------------------------------------------------
 
-browser.storage.local.get({ threshold: 0.85, seenMax: 300, hiding: true }).then(s => {
+browser.storage.local.get({ threshold: 0.85, hiding: true }).then(s => {
   $("threshold").value = s.threshold;
   $("tv").value = s.threshold;
-  $("seenMax").value = s.seenMax;
   $("hiding").checked = s.hiding;
 });
 
@@ -17,23 +16,23 @@ $("threshold").oninput = e => {
   browser.storage.local.set({ threshold: +e.target.value });
 };
 
-$("seenMax").onchange = e => {
-  const n = Math.max(20, Math.min(3000, +e.target.value || 300));
-  e.target.value = n;
-  browser.storage.local.set({ seenMax: n });
-};
-
 // ---- status --------------------------------------------------------------
 
 async function stats() {
   const s = await send({ type: "stats" });
-  const seen = s.pos + s.neg - s.taught;
   const h = s.holdout
     ? `holdout accuracy ${(s.holdout.acc * 100).toFixed(0)}% on ${s.holdout.n} held-out labels`
     : "holdout accuracy: not enough labels yet";
-  const state = s.ready
-    ? "filtering active"
-    : `filtering OFF — needs ${s.need} of each class (have ${s.pos} hide, ${s.neg} keep)`;
+  // The panic case reads as a fault rather than a setting, because it is one:
+  // the model is hiding essentially everything and has switched itself off to
+  // let ambient browsing pull it back.
+  const state = s.panic
+    ? "filtering OFF — the model was hiding almost every post, so it stopped."
+      + " Browse a little and it will correct itself; ✓ a few good posts to speed that up."
+    : s.ready
+      ? "filtering active"
+      : `filtering OFF — needs ${s.need} hides (have ${s.pos})`
+        + ` and ${s.needSeen} posts seen (have ${s.seen})`;
 
   // More than one backend across the label set means some vectors were embedded
   // somewhere else and can't be compared with the rest. Worth seeing without
@@ -44,8 +43,8 @@ async function stats() {
     : "";
 
   $("stats").textContent =
-    `${state}\n${s.taught} clicked (${s.pos} hide, ${s.neg - seen} fine) + ${seen} seen\n`
-    + `${h}\nrunning on ${s.backend}${mix}`;
+    `${state}\n${s.pos} hide / ${s.neg} fine clicked, ${s.seen} seen while browsing,`
+    + ` ${s.archived} in the archive\n${h}\nrunning on ${s.backend}${mix}`;
 }
 
 // ---- post lists ----------------------------------------------------------

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { K, Model, ZERO, l2, fit, holdout, usable, counts, SEEN_WEIGHT } from "./model.js";
+import {
+  K, Model, ZERO, l2, feats, fit, holdout, usable, counts, score,
+  Ambient, AMBIENT_CAP, MIN_AMBIENT, PANIC_RATE, REFIT_EVERY,
+} from "./model.js";
 
 // Synthetic stand-ins for CLIP embeddings. jit() nudges one toward a fresh
 // direction so train and test never see the same vector. `a` is relative to the
@@ -83,14 +86,14 @@ test("one-class labels are rejected instead of hiding everything", () => {
   // Guards: hide two posts, reload, and the whole page is gone at 1.00, because
   // nothing counteracts the bias when every label says y=1.
   const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
-  assert.equal(usable(onlyHides), false);
-  assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0, taught: 4 });
+  assert.equal(usable(onlyHides, new Ambient()), false);
+  assert.deepEqual(counts(onlyHides), { pos: 4, neg: 0 });
 
   const m = fit(onlyHides);
   assert.ok(m.score(jit(IB, 7), jit(TB, 7)) > 0.9, "a one-class fit really does saturate");
 
   const mixed = [...onlyHides, ...[0, 1, 2].map(k => ({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0 }))];
-  assert.equal(usable(mixed), true);
+  assert.equal(usable(mixed, new Ambient()), true);
 });
 
 test("rare positives survive a pile of negatives", () => {
@@ -104,19 +107,109 @@ test("rare positives survive a pile of negatives", () => {
   assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
 });
 
-test("a pile of weak 'seen' labels cannot outvote a few explicit hides", () => {
-  // Implicit negatives only work if they stay quiet enough not to swamp clicks.
+// A browsing session. Mostly posts unrelated to anything labelled, with a real
+// keep every third, which is roughly what a board looks like.
+//
+// `gated` mirrors background.js: a nudge is skipped for a post that was actually
+// *hidden*, because pushing that down would train against the thing you asked it
+// to catch. Note the gate is on hidden, not on high-scoring -- with filtering
+// off nothing is hidden, so everything is a legitimate negative. That is what
+// makes saturation recoverable instead of absorbing.
+const browse = (m, amb, n, { seed = 0, gated = true } = {}) => {
+  for (let k = 0; k < n; k++) {
+    const s = seed + k;
+    const [i, t] = s % 3 === 0
+      ? [jit(IA, s), jit(TB, s + 991)]                       // a crossed pair: a true keep
+      : [emb(100 + (s % 997) * 0.37), emb(5000 + (s % 991) * 0.41)];   // unrelated traffic
+    if (gated && score(m, amb, i, t) > 0.85) continue;
+    amb.nudge(feats(i, t), m.z(feats(i, t)));
+  }
+};
+
+const clearing = (m, amb) => {
+  const hides = [];
+  for (let k = 9000; k < 9020; k++)
+    for (const [i, t, y] of PAIRS)
+      if (y) hides.push(score(m, amb, jit(i, k), jit(t, k + 991)));
+  return hides.filter(p => p > 0.85).length / hides.length;
+};
+
+test("ambient sightings satisfy the negative class", () => {
+  const hides = [0, 1, 2].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
+  const amb = new Ambient();
+  assert.equal(usable(hides, amb), false, "three hides and no evidence of anything else");
+  amb.n = MIN_AMBIENT;
+  assert.equal(usable(hides, amb), true, "browsing alone should unlock filtering");
+});
+
+test("ambient browsing never squashes true hides below the threshold", () => {
+  // The failure fit() already warns about -- ranking stays perfect while every
+  // score drifts toward 0.5, so nothing clears 0.85 and the filter silently does
+  // nothing. Ambient pushes in exactly that direction and is never refit away,
+  // so it must be swept: the damage is cumulative and a single N would miss it.
   const labels = [];
-  for (let k = 0; k < 4; k++) labels.push({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1, src: "hide" });
-  for (let k = 0; k < 300; k++)
-    labels.push({ img: jit(IB, k), txt: jit(TB, k + 991), y: 0, w: SEEN_WEIGHT, src: "seen" });
+  for (let k = 0; k < 5; k++)
+    for (const [i, t, y] of PAIRS) labels.push({ img: jit(i, k), txt: jit(t, k + 991), y });
+  const amb = new Ambient();
+  let m = fit(labels, amb);
 
-  assert.deepEqual(counts(labels), { pos: 4, neg: 300, taught: 4 });
-  assert.equal(usable(labels), true, "seen labels should satisfy the negative class");
+  // Refit on the sighting count as production does; without that this measures a
+  // state the extension is never actually in.
+  const session = (n, seed) => {
+    for (let k = 0; k < n; k += REFIT_EVERY) {
+      browse(m, amb, Math.min(REFIT_EVERY, n - k), { seed: seed + k });
+      m = fit(labels, amb);
+    }
+  };
 
-  const m = fit(labels);
-  assert.ok(m.score(jit(IA, 8001), jit(TA, 8992)) > 0.85, "explicit hides got drowned out");
-  assert.ok(m.score(jit(IB, 8001), jit(TB, 8992)) < 0.5);
+  let seen = 0;
+  for (const n of [100, 1000, 10000]) {
+    session(n - seen, seen);
+    seen = n;
+    const over = clearing(m, amb);
+    assert.ok(over > 0.8, `after ${n} sightings only ${(over * 100) | 0}% of true hides clear 0.85`);
+  }
+
+  let n2 = amb.b * amb.b;
+  for (const x of amb.w) n2 += x * x;
+  assert.ok(Math.sqrt(n2) <= AMBIENT_CAP + 1e-6, `cap breached at ${Math.sqrt(n2).toFixed(2)}`);
+});
+
+test("a saturated model is recoverable rather than permanently dead", () => {
+  // Without the panic guard this is terminal: a one-class fit hides everything,
+  // every post is therefore hidden, the gate blocks every nudge, and nothing can
+  // ever push back. Reset is the only exit and it costs the whole label set.
+  const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
+  const m = fit(onlyHides);
+  const amb = new Ambient();
+  amb.n = MIN_AMBIENT;
+
+  assert.ok(score(m, amb, jit(IB, 7), jit(TB, 7)) > 0.9, "the fit really does saturate");
+  assert.equal(usable(onlyHides, amb), true, "and filtering is switched on");
+  assert.equal(usable(onlyHides, amb, PANIC_RATE), false, "hiding the whole page must stop filtering");
+
+  // Filtering off means nothing is hidden, so every post nudges again.
+  browse(m, amb, 3000, { gated: false });
+  assert.ok(score(m, amb, jit(IB, 8001), jit(TB, 8992)) < 0.85, "never climbed back out");
+});
+
+test("ambient nudges self-extinguish once a region reads as keep", () => {
+  // The bound that makes thousands of one-class updates safe: the error is the
+  // *combined* score, so a region that already reads keep stops attracting
+  // weight. Take the error from ambient's own z instead and it never settles --
+  // it walks to the cap and drags the hides down with it.
+  const onlyHides = [0, 1, 2, 3].map(k => ({ img: jit(IA, k), txt: jit(TA, k + 991), y: 1 }));
+  const m = fit(onlyHides);          // saturated, so this region starts at ~1.00
+  const amb = new Ambient();
+  const f = feats(jit(IB, 1), jit(TB, 992));
+  const norm = () => { let s = amb.b * amb.b; for (const x of amb.w) s += x * x; return Math.sqrt(s); };
+
+  const run = n => { for (let k = 0; k < n; k++) amb.nudge(f, m.z(f)); return norm(); };
+  const a = norm(), b = run(200), c = run(200);
+
+  assert.ok(b - a > 0.05, `nothing moved while the region still read hide: ${(b - a).toFixed(3)}`);
+  assert.ok(c - b < (b - a) / 2,
+    `growth did not decay: ${(b - a).toFixed(3)} then ${(c - b).toFixed(3)}`);
 });
 
 test("scores actually clear the default threshold, not just rank correctly", () => {

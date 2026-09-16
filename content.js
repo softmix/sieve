@@ -42,9 +42,29 @@ async function run() {
   const pending = new Set();
   const seen = new WeakSet();
 
+  // Anything the archive holds for this board that isn't on the catalog has
+  // 404'd. Snapshot the *first* substantial render and only that one: 4chan's
+  // catalog search re-renders #threads with just the matches, and a snapshot
+  // taken after you've typed in it would look like the whole board had expired.
+  // The size floor also covers the catalog not having rendered yet at
+  // document_idle, and the background refuses implausibly small sets anyway.
+  let pruned = false;
+  const prune = posts => {
+    if (pruned || !site.catalog || posts.length < 20) return;
+    pruned = true;
+    const threads = posts
+      .map(p => +(/\/thread\/(\d+)/.exec(site.link?.(p) ?? "")?.[1] ?? 0))
+      .filter(Boolean);
+    const board = /^\/([^/]+)\//.exec(location.pathname)?.[1];
+    if (board && threads.length)
+      browser.runtime.sendMessage({ type: "prune", board, threads }).catch(() => {});
+  };
+
   const scan = () => {
     const before = pending.size;
-    for (const p of document.querySelectorAll(site.post))
+    const posts = [...document.querySelectorAll(site.post)];
+    prune(posts);
+    for (const p of posts)
       if (!seen.has(p)) {
         seen.add(p);
         set(p, {});     // draw the badge immediately so "not scored yet" is visible
@@ -161,8 +181,8 @@ async function run() {
     if (!res) return;
 
     set(post, {
-      tally: `${res.pos} hide / ${res.neg} keep`
-        + (res.ready ? "" : ` — filtering starts at ${res.need} of each`),
+      tally: `${res.pos} hide / ${res.neg} fine`
+        + (res.ready ? "" : ` — filtering starts at ${res.need} hides`),
     });
   }
 

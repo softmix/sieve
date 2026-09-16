@@ -57,14 +57,6 @@
 </div>
 <p class="hint">Every post carries its score in <code>data-sieve</code> — inspect a few to pick this.</p>
 
-<div class="row">
-  <label for="seenMax">remember</label>
-  <input type="number" id="seenMax" min="20" max="3000" step="20">
-  <span>posts you scrolled past</span>
-</div>
-<p class="hint">Weak evidence gathered automatically, oldest dropped first. Posts you
-clicked ✓ or ✗ are never pruned. Raising this costs refit time on every click.</p>
-
 <h2>close calls</h2>
 <p class="hint">The posts the model is least sure about. Labelling these teaches it
 more than labelling anything else.</p>
@@ -72,10 +64,11 @@ more than labelling anything else.</p>
 <button id="more">refresh</button>
 
 <details id="hidden-box">
-  <summary class="h2">recently hidden</summary>
-  <p class="hint">What the filter actually collapsed, newest first, scored as the
-  model stands now. ✓ anything that was fine — that's a full-weight label, and the
-  fastest way to pull the threshold back off good posts.</p>
+  <summary class="h2">currently hidden</summary>
+  <p class="hint">Everything in the archive the filter would collapse right now,
+  highest first. ✓ anything that was fine — that's a full-weight label, and the
+  fastest way to pull the threshold back off good posts. This survives a browser
+  restart now; it used to be the last 60 in memory.</p>
   <ul id="hidden" class="posts"><li class="empty">…</li></ul>
   <button id="more-hidden">refresh</button>
 </details>

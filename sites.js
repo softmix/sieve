@@ -8,6 +8,9 @@
 // mount:  element the badge goes in, and that collapses when hidden. Should be
 //         the site's own boxed element, else the badge sits outside the post.
 //         Defaults to `post`.
+// catalog: this page lists *every* live thread on the board, so anything the
+//         archive holds for this board that isn't here has 404'd. That's how
+//         expired posts get pruned without asking the server about each one.
 // block:  give the badge its own line instead of floating it.
 // side:   "left" to float left.
 // image:  the thumbnail, deliberately -- already decoded in the page, and CLIP
@@ -19,6 +22,7 @@ const SITES = [
     host: "boards.4chan.org",
     path: /^\/[^/]+\/catalog/,
     post: ".thread",
+    catalog: true,
     block: true,   // no header row to sit beside, and narrow images sit next to a float
     text: p => p.querySelector(".teaser")?.innerText ?? "",
     image: p => p.querySelector("img.thumb")?.src ?? null,

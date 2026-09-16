@@ -2,7 +2,10 @@ import {
   AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection,
   CLIPVisionModelWithProjection, RawImage, env,
 } from "./vendor/transformers.js";
-import { Model, ZERO, K, l2, fit, holdout, usable, counts, MIN_PER_CLASS, SEEN_WEIGHT } from "./model.js";
+import {
+  Model, Ambient, ZERO, K, l2, feats, fit, holdout, usable, counts, score,
+  MIN_PER_CLASS, MIN_AMBIENT, REFIT_EVERY, PANIC_RATE, PANIC_WINDOW,
+} from "./model.js";
 
 const MODEL = "Xenova/clip-vit-base-patch32";
 
@@ -107,6 +110,7 @@ async function embedTexts(texts) {
 
 async function embedImages(srcs) {
   const out = new Array(srcs.length);
+  const bytes = new Array(srcs.length);
   const raws = [], need = [];
 
   // Fetches parallelise even though inference doesn't.
@@ -116,20 +120,26 @@ async function embedImages(srcs) {
     const hit = cache.img.get(src);
     if (hit) return void (out[i] = hit);
     try {
-      raws[i] = await RawImage.read(src);
+      // fetch + fromBlob rather than RawImage.read, which does exactly this and
+      // then drops the encoded bytes. The archive wants them: 4chan deletes a
+      // thread's images within days, and a training map full of dead thumbnails
+      // is a training map you can't use. One fetch feeds both.
+      const blob = await (await fetch(src)).blob();
+      bytes[i] = new Uint8Array(await blob.arrayBuffer());
+      raws[i] = await RawImage.fromBlob(blob);
       need.push(i);
     } catch {
       out[i] = ZERO;   // a dead thumbnail shouldn't take the whole batch down
     }
   }));
   fetched += performance.now() - t;
-  if (!need.length) return out;
+  if (!need.length) return { out, bytes };
 
   const { proc, vis } = await load();
   const { image_embeds } = await vis(await proc(need.map(i => raws[i])));
   const rows = image_embeds.tolist();
   need.forEach((i, k) => (out[i] = keep(cache.img, srcs[i], l2(rows[k]))));
-  return out;
+  return { out, bytes };
 }
 
 // One ORT session, so one batch at a time.
@@ -146,9 +156,9 @@ const embed = items => {
   const once = async () => {
     const t = performance.now();
     const txts = await embedTexts(items.map(i => i.text));
-    const imgs = await embedImages(items.map(i => i.img));
+    const { out: imgs, bytes } = await embedImages(items.map(i => i.img));
     const ms = (performance.now() - t) / items.length;
-    return items.map((_, i) => ({ txt: txts[i], img: imgs[i], ms }));
+    return items.map((_, i) => ({ txt: txts[i], img: imgs[i], thumb: bytes[i], ms }));
   };
   const run = tail.then(async () => {
     try {
@@ -173,30 +183,66 @@ const toF32 = v => v instanceof Float32Array ? v
   : Float32Array.from(Array.isArray(v) ? v : Object.values(v));
 
 let model = new Model();
+let ambient = new Ambient();
 let labels = [];
 let scored = 0, spent = 0, queued = 0, fetched = 0;
 
 // Exact recall, in front of the model: an explicitly marked post is a stored
-// fact, so it stays hidden regardless of what the model currently thinks. Only
-// explicit labels go in `taught` -- a merely-seen post must stay scoreable.
+// fact, so it stays hidden regardless of what the model currently thinks.
 const keyOf = (text, img) => `${img || ""}\n${(text || "").trim().slice(0, 200)}`;
-let taught = new Map(), seenKeys = new Set();
+let taught = new Map(), taughtIds = new Set();
 
 function reindex() {
   taught = new Map();
-  seenKeys = new Set();
+  taughtIds = new Set();
   for (const l of labels) {
-    if (!l.key) continue;
-    if (l.src === "seen") seenKeys.add(l.key); else taught.set(l.key, l.y);
+    if (l.key) taught.set(l.key, l.y);
+    // Archive identity too, so a decided post can be recognised in the archive
+    // without matching truncated text against a key built from full text.
+    const it = identOf(l.url);
+    if (it) taughtIds.add(it.id);
   }
 }
 
-// Splits a key back into its parts. Yields the *image* url; a label's own `url`
-// field is the post permalink, which is a different thing.
-const splitKey = key => {
-  const i = key.indexOf("\n");
-  return { img: key.slice(0, i), text: key.slice(i + 1) };
+// ---- the archive ---------------------------------------------------------
+//
+// Every post seen, hidden or not, kept so the map has something to draw. It is
+// deliberately *not* a training set -- fit() never reads it. Feeding a hide back
+// as evidence would only confirm what the model already believes, and a store
+// the fitter cannot see makes that structural instead of a rule to remember.
+//
+// Eviction is cheap for the same reason the old seen-pool's wasn't: the learning
+// was banked into `ambient` at insert time, so losing a record costs the ability
+// to look at it and nothing else.
+//
+// Vectors and thumbnails get their own storage keys so an insert is an O(1)
+// write. Only the small index is rewritten, and that's debounced.
+let arc = [];                      // index: metadata only, no vectors
+let arcById = new Map();
+let arcNextId = 1;
+let unwritten = new Map();         // id -> {img, txt, thumb} not yet persisted
+
+// 4chan only, and this regex is that rule. The catalog links /g/thread/123 while
+// the index and thread pages link /g/thread/123#p456; identifying by
+// board/thread/post collapses the OP's two forms onto one entry instead of
+// archiving -- and nudging -- the same post twice.
+const IDENT = /boards\.4chan\.org\/([^/]+)\/thread\/(\d+)(?:#p(\d+))?/;
+const identOf = url => {
+  const m = url && IDENT.exec(url);
+  return m && { board: m[1], thread: +m[2], id: `${m[1]}/${m[2]}/${m[3] ?? m[2]}` };
 };
+
+// Rolling window behind usable()'s panic guard. A model hiding essentially the
+// whole page is broken rather than strict, and without this that state is
+// absorbing -- see the comment on PANIC_RATE.
+let hideRing = [], hideCount = 0;
+const noteOutcome = hid => {
+  hideRing.push(hid);
+  if (hid) hideCount++;
+  if (hideRing.length > PANIC_WINDOW && hideRing.shift()) hideCount--;
+};
+const hideRate = () => (hideRing.length >= PANIC_WINDOW ? hideCount / PANIC_WINDOW : null);
+const ready = () => usable(labels, ambient, hideRate());
 
 // Vectors only mean anything against others from the same backend, so more than
 // one entry here says part of the set was embedded elsewhere and is quietly
@@ -205,62 +251,144 @@ const splitKey = key => {
 const evTally = () => labels.reduce((m, l) => ((m[l.ev ?? "unknown"] = (m[l.ev ?? "unknown"] ?? 0) + 1), m), {});
 const evLine = ev => Object.entries(ev).map(([k, n]) => `${n} ${k}`).join(" + ");
 
-// Bounded: every scored post adds one, and they all go through fit() on each
-// click. Oldest out. Explicit labels are never pruned.
-let seenMax = 300;
 let threshold = 0.85;
 
-function noteSeen(e, key, url) {
-  if (taught.has(key) || seenKeys.has(key)) return;
-  const seen = labels.filter(l => l.src === "seen");
-  if (seen.length >= seenMax) {
-    // All excess in one pass, so lowering the setting takes effect immediately.
-    const drop = new Set(seen.slice(0, seen.length - seenMax + 1));
-    labels = labels.filter(l => !drop.has(l));
+// Insert = archive + nudge, once per post. Not once per page view: the archive's
+// own dedupe is the ambient dedupe, so revisiting a catalog costs nothing.
+function remember(e, item, hidden) {
+  const it = identOf(item.url);
+  if (!it) return;                    // reddit, or no permalink: no archive, no nudge
+  if (arcById.has(it.id)) return;
+
+  const entry = {
+    n: arcNextId++, id: it.id, board: it.board, thread: it.thread, url: item.url,
+    text: (item.text || "").trim().slice(0, 300), img: item.img,
+    ts: Date.now(), ev: EV, xy: null,
+  };
+  arc.push(entry);
+  arcById.set(it.id, entry);
+  unwritten.set(entry.n, { img: e.img, txt: e.txt, thumb: e.thumb });
+  arcVec?.set(entry.n, { img: e.img, txt: e.txt });
+
+  // One permanent step, and only when the post was not actually hidden: pushing
+  // down something you asked it to catch would train against the catch. The gate
+  // is "was hidden", not "scored high" -- with filtering off nothing is hidden,
+  // so everything is a legitimate negative, and that is what lets a saturated
+  // model climb back out instead of staying dead until Reset.
+  if (!hidden) {
+    const f = feats(e.img, e.txt);
+    ambient.nudge(f, model.z(f));
+    // Ambient drifts the combined score between clicks and only a refit puts the
+    // label weights back in step. Clicks are far too rare to rely on.
+    if (ambient.n % REFIT_EVERY === 0) refit();
   }
-  labels.push({ img: e.img, txt: e.txt, y: 0, w: SEEN_WEIGHT, src: "seen", key, url, ev: EV, ts: Date.now() });
-  seenKeys.add(key);
   soon();
 }
 
-// A hide leaves no label behind -- it's the model's own call, and feeding it back
-// as evidence would just confirm whatever it already believes. So keep the last
-// few in a ring for the options page to second-guess. Newest first, in memory
-// only: browsing refills it, and nothing here is worth a storage write.
-const RECENT_MAX = 60;
-let recent = [];
+const refit = () => (model = fit(labels, ambient));
 
-function noteHidden(e, key, url) {
-  if (taught.has(key) || recent.some(r => r.key === key)) return;
-  recent.unshift({ img: e.img, txt: e.txt, key, url, ev: EV, ts: Date.now() });
-  recent.length = Math.min(recent.length, RECENT_MAX);
-  // The only window onto this list: it's memory-only, and "why is nothing in
-  // recently hidden" is otherwise unanswerable without a debugger.
-  console.log(`sieve: hid ${recent.length} so far, latest ${url || key.split("\n")[0] || "(no url)"}`);
-}
-
-// Implicit labels settle in batches; explicit clicks commit immediately.
 let timer = null;
 const soon = () => {
   clearTimeout(timer);
-  timer = setTimeout(commit, 5000);
+  timer = setTimeout(flush, 5000);
 };
-async function commit() {
+
+// Archive, ambient and coordinates settle in batches. Losing a few sightings to
+// a crash costs nothing the model hasn't already absorbed, and rewriting the
+// index per post would not scale past a few hundred entries.
+async function flush() {
   clearTimeout(timer);
-  model = fit(labels);
+  const w = { arc, arcNextId, ambient: ambient.toJSON() };
+  for (const [n, v] of unwritten) {
+    w[`v${n}`] = { img: v.img, txt: v.txt };     // written once, never rewritten
+    if (v.thumb) w[`t${n}`] = v.thumb;
+  }
+  unwritten.clear();
+  await browser.storage.local.set(w);
+}
+
+// Explicit clicks are worth an immediate write.
+async function commit() {
+  refit();
   await browser.storage.local.set({ labels });
 }
 
+// Archive vectors, loaded on demand rather than at boot. Nothing on the browsing
+// path needs them -- dedupe and pruning run off the index -- so the cost lands on
+// opening a view instead of on every browser start. Kept in memory afterwards;
+// that's what the persistent MV2 background page is for.
+let arcVec = null;
+async function vectors() {
+  if (arcVec) return arcVec;
+  const got = await browser.storage.local.get(arc.map(e => `v${e.n}`));
+  arcVec = new Map();
+  for (const e of arc) {
+    const v = got[`v${e.n}`];
+    if (v) arcVec.set(e.n, { img: toF32(v.img), txt: toF32(v.txt) });
+  }
+  for (const [n, v] of unwritten) arcVec.set(n, { img: v.img, txt: v.txt });
+  return arcVec;
+}
+
+// One-time upgrade. The old seen-pool was both the archive and the negative
+// class at once, which is exactly why it had to stay capped at 300. Splitting
+// them means its records move to the archive and its *evidence* is replayed as
+// ambient -- the new semantics applied to old data, so the upgrade doesn't
+// quietly knock the negative class out of a model you spent weeks training.
+function migrate(old) {
+  const seen = old.filter(l => l.src === "seen");
+  if (!seen.length) return old;
+  const kept = old.filter(l => l.src !== "seen");
+
+  // Replay against the explicit-label fit, which is roughly the model that was
+  // in force when each was recorded.
+  model = kept.length ? fit(kept, ambient) : new Model();
+  for (const l of seen) {
+    const it = identOf(l.url);
+    if (it && !arcById.has(it.id)) {
+      // The old key packed the image url and the text together.
+      const i = (l.key ?? "").indexOf("\n");
+      const entry = {
+        n: arcNextId++, id: it.id, board: it.board, thread: it.thread, url: l.url,
+        text: i < 0 ? "" : l.key.slice(i + 1), img: i < 0 ? null : l.key.slice(0, i),
+        ts: l.ts ?? Date.now(), ev: l.ev ?? "unknown", xy: null,
+      };
+      arc.push(entry);
+      arcById.set(it.id, entry);
+      // No thumbnail bytes for these -- the fetch that would have kept them
+      // happened before there was anywhere to put them. They fall back to the
+      // url and go dark when 4chan deletes the thread, which pruning removes.
+      unwritten.set(entry.n, { img: l.img, txt: l.txt });
+    }
+    const f = feats(l.img, l.txt);
+    ambient.nudge(f, model.z(f));
+  }
+  console.log(`sieve: migrated ${seen.length} seen labels into the archive and ambient`);
+  return kept;
+}
+
 const booted = (async () => {
-  const s = await browser.storage.local.get({ labels: [], threshold: 0.85, seenMax: 300 });
+  const s = await browser.storage.local.get({
+    labels: [], threshold: 0.85, arc: [], arcNextId: 1, ambient: null,
+  });
   threshold = s.threshold;
-  seenMax = s.seenMax;
-  labels = s.labels.map(l => ({ ...l, img: toF32(l.img), txt: toF32(l.txt) }));
+  arc = s.arc;
+  arcNextId = s.arcNextId;
+  arcById = new Map(arc.map(e => [e.id, e]));
+  if (s.ambient) ambient = Ambient.from({ ...s.ambient, w: toF32(s.ambient.w) });
+
+  const loaded = s.labels.map(l => ({ ...l, img: toF32(l.img), txt: toF32(l.txt) }));
+  labels = migrate(loaded);
   reindex();
-  if (labels.length) model = fit(labels);
+  refit();
+  if (labels.length !== loaded.length) {
+    await browser.storage.local.set({ labels });
+    await flush();
+  }
+
   const c = counts(labels);
-  console.log(`sieve: ${c.pos} hide / ${c.neg} keep (${c.taught} clicked) loaded,`
-    + ` filtering ${usable(labels) ? "on" : "off"}`);
+  console.log(`sieve: ${c.pos} hide / ${c.neg} keep clicked, ${ambient.n} seen,`
+    + ` ${arc.length} archived, filtering ${ready() ? "on" : "off"}`);
   const ev = evTally();
   if (Object.keys(ev).length > 1)
     console.warn(`sieve: labels span ${evLine(ev)} — vectors from different backends are not comparable`);
@@ -268,7 +396,6 @@ const booted = (async () => {
 
 browser.storage.onChanged.addListener(c => {
   if (c.threshold) threshold = c.threshold.newValue;
-  if (c.seenMax) seenMax = c.seenMax.newValue;
 });
 
 browser.runtime.onMessage.addListener(async msg => {
@@ -291,15 +418,12 @@ browser.runtime.onMessage.addListener(async msg => {
         todo.forEach((i, k) => {
           const e = es[k];
           spent += e.ms;
-          const p = model.score(e.img, e.txt);
-          const key = keyOf(msg.items[i].text, msg.items[i].img);
-          const ready = usable(labels);
-          // Only posts the model left alone become labels: if it flagged one and
-          // you didn't correct it, a contradicting "fine" would train against
-          // the catch. The flagged ones go in the ring instead.
-          if (p <= threshold) noteSeen(e, key, msg.items[i].url);
-          else if (ready) noteHidden(e, key, msg.items[i].url);
-          out[i] = { p, ready };
+          const p = score(model, ambient, e.img, e.txt);
+          const on = ready();
+          const hidden = on && p > threshold;
+          noteOutcome(hidden);
+          remember(e, msg.items[i], hidden);
+          out[i] = { p, ready: on };
 
           if (++scored <= 5 || scored % 25 === 0)
             console.log(`sieve: ${scored} scored, ${e.ms | 0}ms/post in this batch of ${todo.length}`
@@ -317,48 +441,74 @@ browser.runtime.onMessage.addListener(async msg => {
       reindex();
       await commit();
       const c = counts(labels);
-      console.log(`sieve: ${msg.y ? "hide" : "keep"} -> ${c.pos} hide / ${c.neg} keep (${c.taught} clicked)`);
-      return { ...c, ready: usable(labels), need: MIN_PER_CLASS };
+      console.log(`sieve: ${msg.y ? "hide" : "keep"} -> ${c.pos} hide / ${c.neg} keep`);
+      return { ...c, ready: ready(), need: MIN_PER_CLASS };
     }
     case "stats":
       return {
-        ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS,
-        holdout: holdout(labels), backend, evs: evTally(),
+        ...counts(labels), ready: ready(), need: MIN_PER_CLASS,
+        seen: ambient.n, needSeen: MIN_AMBIENT, archived: arc.length,
+        panic: hideRate() >= PANIC_RATE,
+        holdout: holdout(labels, ambient), backend, evs: evTally(),
       };
 
-    // Uncertainty sampling: whichever posts sit nearest 0.5. Drawn from the seen
-    // pool, so they already carry embeddings and cost no inference to label.
-    case "closeCalls": {
-      return labels
-        .filter(l => l.src === "seen")
-        .map(l => ({ key: l.key, url: l.url, p: model.score(l.img, l.txt) }))
-        .sort((a, b) => Math.abs(a.p - 0.5) - Math.abs(b.p - 0.5))
+    // Both of these are now views of the one archive rather than two separate
+    // rolling windows -- close calls used to be a 300-entry pool and recently
+    // hidden a 60-entry in-memory ring that died with the browser. The map is
+    // the third view of the same store.
+    case "closeCalls":
+    case "recentHidden": {
+      const vs = await vectors();
+      const near = msg.type === "closeCalls";
+      return arc
+        .filter(e => !taughtIds.has(e.id) && vs.has(e.n))
+        .map(e => ({ e, p: score(model, ambient, vs.get(e.n).img, vs.get(e.n).txt) }))
+        .filter(({ p }) => near || p > threshold)
+        .sort((a, b) => near ? Math.abs(a.p - 0.5) - Math.abs(b.p - 0.5) : b.p - a.p)
         .slice(0, msg.n ?? 12)
-        .map(s => ({ ...s, ...splitKey(s.key) }));
+        .map(({ e, p }) => ({ key: e.id, url: e.url, img: e.img, text: e.text, p }));
     }
 
-    // Scored now rather than at hide time, so the list reflects what the model
-    // thinks after whatever you've already corrected.
-    case "recentHidden":
-      return recent
-        .filter(r => !taught.has(r.key))
-        .slice(0, msg.n ?? 12)
-        .map(r => ({ key: r.key, url: r.url, p: model.score(r.img, r.txt), ...splitKey(r.key) }));
-
-    // Promote a post in place, reusing its stored embeddings.
+    // Promote an archive entry to a label, reusing its stored embeddings.
     case "relabel": {
-      // A close call is already a label; a hidden post is only in the ring, so
-      // it has to be added rather than amended.
-      let l = labels.find(x => x.key === msg.key);
-      if (!l) {
-        l = recent.find(x => x.key === msg.key);
-        if (!l) return { gone: true };
-        labels.push(l);
-      }
-      Object.assign(l, { y: msg.y, w: 1, src: msg.y ? "hide" : "keep", ts: Date.now() });
+      const e = arcById.get(msg.key);
+      const v = e && (await vectors()).get(e.n);
+      if (!v) return { gone: true };
+      const key = keyOf(e.text, e.img);
+      labels = labels.filter(l => l.key !== key);
+      labels.push({
+        img: v.img, txt: v.txt, y: msg.y, src: msg.y ? "hide" : "keep",
+        key, url: e.url, ev: e.ev, ts: Date.now(),
+      });
       reindex();
       await commit();
-      return { ...counts(labels), ready: usable(labels), need: MIN_PER_CLASS };
+      return { ...counts(labels), ready: ready(), need: MIN_PER_CLASS };
+    }
+
+    // Expired threads, pruned from the catalog's own membership list rather than
+    // by asking the server about 3000 posts. Runs on catalog visit, so the map
+    // can render purely from cached data.
+    case "prune": {
+      const live = new Set(msg.threads);
+      // 4chan's catalog search re-renders #threads with only the matches, and a
+      // snapshot taken after that would delete the entire board. The content
+      // script only sends its first scan; this is the second line of defence.
+      if (live.size < 20) return { skipped: true };
+      const drop = arc.filter(e =>
+        e.board === msg.board && !live.has(e.thread) && !taughtIds.has(e.id));
+      if (!drop.length) return { dropped: 0 };
+
+      const gone = new Set(drop.map(e => e.id));
+      arc = arc.filter(e => !gone.has(e.id));
+      for (const e of drop) {
+        arcById.delete(e.id);
+        arcVec?.delete(e.n);
+        unwritten.delete(e.n);
+      }
+      await browser.storage.local.remove(drop.flatMap(e => [`v${e.n}`, `t${e.n}`]));
+      await flush();
+      console.log(`sieve: pruned ${drop.length} expired posts from /${msg.board}/`);
+      return { dropped: drop.length };
     }
     case "export":
       // Everything needed to rebuild the model elsewhere.
@@ -384,13 +534,26 @@ browser.runtime.onMessage.addListener(async msg => {
       return { added: incoming.length, skipped: (msg.labels?.length ?? 0) - incoming.length, ...counts(labels) };
     }
 
-    case "reset":
+    case "reset": {
+      // Ambient is the only thing here that can't be undone any other way, so
+      // this has to clear it too or a Reset leaves the model half-trained by
+      // evidence whose records are gone.
+      const keys = arc.flatMap(e => [`v${e.n}`, `t${e.n}`]);
       labels = [];
-      recent = [];
+      arc = [];
+      arcById = new Map();
+      arcVec = null;
+      unwritten.clear();
+      arcNextId = 1;
+      hideRing = [];
+      hideCount = 0;
       model = new Model();
+      ambient = new Ambient();
       reindex();   // else exact recall keeps hiding posts whose labels are gone
-      await browser.storage.local.set({ labels });
+      await browser.storage.local.remove(keys);
+      await browser.storage.local.set({ labels, arc, arcNextId, ambient: ambient.toJSON() });
       return { ok: true };
+    }
   }
 });
 
